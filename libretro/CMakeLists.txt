@@ -9,6 +9,7 @@ set_target_properties(pcsx2x6_libretro PROPERTIES
 target_sources(pcsx2x6_libretro PRIVATE
 	Libretro.cpp
 	LibretroHost.cpp
+	LibretroHost.h
 	libretro.h
 )
 

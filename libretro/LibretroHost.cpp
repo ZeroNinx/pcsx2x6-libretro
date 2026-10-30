@@ -2,7 +2,10 @@
 // SPDX-FileCopyrightText: 2026 pcsx2x6-libretro contributors
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "LibretroHost.h"
+
 #include "Achievements.h"
+#include "Config.h"
 #include "GS.h"
 #include "GameList.h"
 #include "Host.h"
@@ -12,13 +15,392 @@
 #include "Input/InputManager.h"
 #include "MTGS.h"
 #include "VMManager.h"
+#include "ps2/BiosTools.h"
 
 #include "common/Console.h"
+#include "common/Error.h"
+#include "common/FileSystem.h"
+#include "common/MemorySettingsInterface.h"
+#include "common/Path.h"
 #include "common/ProgressCallback.h"
 #include "common/SmallString.h"
+#include "common/StringUtil.h"
 #include "common/WindowInfo.h"
 
+#include <cstdio>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace
+{
+	constexpr const char* DIRECTORY_NAME = "pcsx2x6";
+	constexpr const char* CONTENT_EXTENSION = "acgame";
+
+	constexpr const char* BIOS_OPTION_KEY = "pcsx2x6_bios";
+	constexpr const char* BIOS_OPTION_NONE = "none";
+
+	constexpr size_t MAX_QUEUED_LOG_MESSAGES = 4096;
+	constexpr unsigned ERROR_MESSAGE_FRAMES = 300;
+
+	struct QueuedLogMessage
+	{
+		retro_log_level level;
+		std::string text;
+	};
+
+	retro_environment_t s_environment = nullptr;
+	retro_log_printf_t s_frontend_log = nullptr;
+
+	std::mutex s_log_mutex;
+	std::deque<QueuedLogMessage> s_log_queue;
+	u32 s_dropped_log_messages = 0;
+
+	// Outlives every session because the emulator keeps a pointer to it.
+	MemorySettingsInterface s_settings;
+
+	std::vector<std::string> s_bios_option_values;
+	retro_core_option_v2_definition s_core_option_definitions[2];
+} // namespace
+
+// Console.Error() and Console.Warning() log at LOGLEVEL_INFO and carry their
+// severity in the colour alone.
+static retro_log_level GetFrontendLogLevel(LOGLEVEL level, ConsoleColors color)
+{
+	if (level == LOGLEVEL_ERROR || color == Color_StrongRed)
+		return RETRO_LOG_ERROR;
+	if (level == LOGLEVEL_WARNING || color == Color_StrongOrange)
+		return RETRO_LOG_WARN;
+	return (level == LOGLEVEL_INFO) ? RETRO_LOG_INFO : RETRO_LOG_DEBUG;
+}
+
+// Runs on any emulator thread, so nothing here may call back into the frontend.
+static void QueueLogMessage(LOGLEVEL level, ConsoleColors color, std::string_view message)
+{
+	std::unique_lock lock(s_log_mutex);
+	if (s_log_queue.size() >= MAX_QUEUED_LOG_MESSAGES)
+	{
+		s_dropped_log_messages++;
+		return;
+	}
+
+	s_log_queue.push_back({GetFrontendLogLevel(level, color), std::string(message)});
+}
+
+static void WriteFrontendLog(retro_log_level level, std::string_view message)
+{
+	const int length = static_cast<int>(message.size());
+	if (s_frontend_log)
+		s_frontend_log(level, "[PCSX2x6] %.*s\n", length, message.data());
+	else
+		std::fprintf(stderr, "[PCSX2x6] %.*s\n", length, message.data());
+}
+
+void LibretroHost::DrainLogMessages()
+{
+	std::deque<QueuedLogMessage> messages;
+	u32 dropped_messages;
+	{
+		std::unique_lock lock(s_log_mutex);
+		messages.swap(s_log_queue);
+		dropped_messages = std::exchange(s_dropped_log_messages, 0);
+	}
+
+	for (const QueuedLogMessage& message : messages)
+		WriteFrontendLog(message.level, message.text);
+
+	if (dropped_messages > 0)
+		WriteFrontendLog(RETRO_LOG_WARN, fmt::format("Dropped {} log messages", dropped_messages));
+}
+
+void LibretroHost::InitializeLogging()
+{
+	Log::SetHostOutputLevel(LOGLEVEL_INFO, &QueueLogMessage);
+}
+
+void LibretroHost::ShutdownLogging()
+{
+	DrainLogMessages();
+	Log::SetHostOutputLevel(LOGLEVEL_NONE, nullptr);
+}
+
+void LibretroHost::ReportLoadFailure(std::string_view message)
+{
+	Console.ErrorFmt("Content load failed: {}", message);
+	DrainLogMessages();
+
+	const std::string text(message);
+	retro_message frontend_message{text.c_str(), ERROR_MESSAGE_FRAMES};
+	s_environment(RETRO_ENVIRONMENT_SET_MESSAGE, &frontend_message);
+}
+
+// A frontend may report no directory, or a relative one that would resolve against
+// its own working directory. Neither is a safe place for BIOS data or arcade saves.
+static bool GetFrontendDirectory(unsigned command, const char* description, std::string* directory, Error* error)
+{
+	const char* path = nullptr;
+	if (!s_environment(command, &path) || !path || path[0] == '\0')
+	{
+		Error::SetStringFmt(error, "The frontend did not provide a {} directory.", description);
+		return false;
+	}
+
+	if (!Path::IsAbsolute(path))
+	{
+		Error::SetStringFmt(error, "The frontend {} directory '{}' is not an absolute path.", description, path);
+		return false;
+	}
+
+	*directory = Path::Combine(Path::ToNativePath(path), DIRECTORY_NAME);
+	return true;
+}
+
+static std::string GetSourceBiosDirectory(const std::string& system_directory)
+{
+	return Path::Combine(system_directory, "bios");
+}
+
+static void RegisterCoreOptions()
+{
+	s_bios_option_values = {BIOS_OPTION_NONE};
+
+	std::string system_directory;
+	if (GetFrontendDirectory(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, "system", &system_directory, nullptr))
+	{
+		FileSystem::FindResultsArray files;
+		FileSystem::FindFiles(GetSourceBiosDirectory(system_directory).c_str(), "*",
+			FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_SORT_BY_NAME, &files);
+		for (const FILESYSTEM_FIND_DATA& file : files)
+		{
+			u32 version, region;
+			std::string description, zone;
+			if (s_bios_option_values.size() < RETRO_NUM_CORE_OPTION_VALUES_MAX - 1 &&
+				IsBIOS(file.FileName.c_str(), version, description, region, zone))
+			{
+				s_bios_option_values.emplace_back(Path::GetFileName(file.FileName));
+			}
+		}
+	}
+
+	std::memset(s_core_option_definitions, 0, sizeof(s_core_option_definitions));
+	retro_core_option_v2_definition& bios_option = s_core_option_definitions[0];
+	bios_option.key = BIOS_OPTION_KEY;
+	bios_option.desc = "BIOS Image";
+	bios_option.info = "Arcade BIOS image from the pcsx2x6/bios folder in the system directory.";
+	bios_option.default_value = BIOS_OPTION_NONE;
+	for (size_t i = 0; i < s_bios_option_values.size(); i++)
+		bios_option.values[i].value = s_bios_option_values[i].c_str();
+
+	// Frontends also call this while probing core information, with an environment
+	// that rejects everything. Content loading reports a missing BIOS selection.
+	retro_core_options_v2 options{nullptr, s_core_option_definitions};
+	s_environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &options);
+}
+
+void LibretroHost::SetEnvironment(retro_environment_t environment)
+{
+	s_environment = environment;
+
+	retro_log_callback log_callback{};
+	s_frontend_log = environment(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log_callback) ? log_callback.log : nullptr;
+
+	RegisterCoreOptions();
+}
+
+static std::string GetSelectedBios()
+{
+	retro_variable variable{BIOS_OPTION_KEY, nullptr};
+	if (!s_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) || !variable.value)
+		return BIOS_OPTION_NONE;
+
+	return variable.value;
+}
+
+static bool CheckRuntimeResources(Error* error)
+{
+	static constexpr const char* required_resources[] = {
+		"GameIndex.yaml",
+		"fonts" FS_OSPATH_SEPARATOR_STR "Roboto-Regular.ttf",
+	};
+
+	for (const char* resource : required_resources)
+	{
+		const std::string path = Path::Combine(EmuFolders::Resources, resource);
+		if (!FileSystem::FileExists(path.c_str()))
+		{
+			Error::SetStringFmt(error, "Required resource '{}' is missing.", path);
+			return false;
+		}
+	}
+
+	const std::string shaders = Path::Combine(EmuFolders::Resources, "shaders");
+	if (!FileSystem::DirectoryExists(shaders.c_str()))
+	{
+		Error::SetStringFmt(error, "Required resource directory '{}' is missing.", shaders);
+		return false;
+	}
+
+	return true;
+}
+
+static void ApplyCoreSettings(const std::string& bios_name)
+{
+	s_settings.SetStringValue("Filenames", "BIOS", bios_name.c_str());
+
+	// The core owns a device without a window, and the frontend paces the session.
+	s_settings.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::VK));
+	s_settings.SetBoolValue("EmuCore/GS", "FrameLimitEnable", false);
+	s_settings.SetBoolValue("EmuCore/GS", "VsyncEnable", false);
+	s_settings.SetStringValue("SPU2/Output", "Backend", "Null");
+
+	// Input arrives through the libretro API, never from host devices.
+	for (const char* source : {"SDL", "DInput", "XInput", "RawInput"})
+		s_settings.SetBoolValue("InputSources", source, false);
+	s_settings.ClearSection("Hotkeys");
+
+	s_settings.SetBoolValue("Achievements", "Enabled", false);
+	s_settings.SetBoolValue("EmuCore", "EnableDiscordPresence", false);
+	s_settings.SetBoolValue("EmuCore", "EnablePINE", false);
+	s_settings.SetBoolValue("EmuCore", "EnableRecordingTools", false);
+	s_settings.SetBoolValue("EmuCore", "InhibitScreensaver", false);
+
+	// Emulator logging goes through the frontend only. A system console would
+	// open a window on Windows.
+	s_settings.SetBoolValue("Logging", "EnableSystemConsole", false);
+	s_settings.SetBoolValue("Logging", "EnableFileLogging", false);
+}
+
+static void LoadCoreSettings(const std::string& bios_name)
+{
+	{
+		const std::unique_lock lock = Host::GetSettingsLock();
+		if (!Host::Internal::GetBaseSettingsLayer())
+			Host::Internal::SetBaseSettingsLayer(&s_settings);
+
+		// AutoDetectSource edits this layer, so a session starts from the defaults.
+		s_settings.Clear();
+		VMManager::SetDefaultSettings(s_settings, true, true, true, true, true);
+		ApplyCoreSettings(bios_name);
+	}
+
+	VMManager::Internal::LoadStartupSettings();
+}
+
+static bool IsBiosCompanionFile(std::string_view file_name, std::string_view bios_name)
+{
+	return StringUtil::compareNoCase(Path::GetFileTitle(file_name), Path::GetFileTitle(bios_name)) ||
+		   StringUtil::StartsWithNoCase(file_name, fmt::format("{}.", bios_name));
+}
+
+// x6 writes .nvm and .mec beside the BIOS it loads, so that BIOS has to live in a
+// writable location. Everything sharing its filename stem comes along, because
+// extra ROMs are optional and a missing one is skipped with only a log message.
+// Existing files are kept: they hold the state of earlier sessions.
+static bool PrepareBiosWorkingCopy(const std::string& source_directory, const std::string& bios_name, Error* error)
+{
+	const std::string source_path = Path::Combine(source_directory, bios_name);
+	if (!FileSystem::FileExists(source_path.c_str()))
+	{
+		Error::SetStringFmt(error, "The selected BIOS '{}' does not exist.", source_path);
+		return false;
+	}
+
+	FileSystem::FindResultsArray files;
+	FileSystem::FindFiles(source_directory.c_str(), "*", FILESYSTEM_FIND_FILES, &files);
+	for (const FILESYSTEM_FIND_DATA& file : files)
+	{
+		const std::string_view file_name = Path::GetFileName(file.FileName);
+		if (!IsBiosCompanionFile(file_name, bios_name))
+			continue;
+
+		const std::string destination = Path::Combine(EmuFolders::Bios, file_name);
+		if (FileSystem::FileExists(destination.c_str()))
+			continue;
+
+		if (!FileSystem::CopyFilePath(file.FileName.c_str(), destination.c_str(), false))
+		{
+			Error::SetStringFmt(error, "Failed to copy '{}' to '{}'.", file.FileName, destination);
+			return false;
+		}
+		Console.WriteLnFmt("Copied BIOS file '{}' to the working directory", file_name);
+	}
+
+	// LoadBIOS() falls back to the first image it can find when the configured file
+	// is unusable, so a bad working copy has to be rejected before startup.
+	const std::string working_path = Path::Combine(EmuFolders::Bios, bios_name);
+	u32 version, region;
+	std::string description, zone;
+	if (!IsBIOS(working_path.c_str(), version, description, region, zone))
+	{
+		Error::SetStringFmt(error, "'{}' is not a valid BIOS image.", working_path);
+		return false;
+	}
+
+	Console.WriteLnFmt("Using BIOS '{}' ({} {})", bios_name, description, zone);
+	return true;
+}
+
+bool LibretroHost::PrepareContent(const char* content_path, Error* error)
+{
+	// The Windows file functions reject absolute paths with forward slashes, which
+	// frontends can legitimately pass.
+	const std::string native_content_path = content_path ? Path::ToNativePath(content_path) : std::string();
+	if (!FileSystem::FileExists(native_content_path.c_str()))
+	{
+		Error::SetStringFmt(error, "Content file '{}' does not exist.", native_content_path);
+		return false;
+	}
+
+	if (!StringUtil::compareNoCase(Path::GetExtension(native_content_path), CONTENT_EXTENSION))
+	{
+		Error::SetStringFmt(error, "'{}' is not a .{} manifest.", native_content_path, CONTENT_EXTENSION);
+		return false;
+	}
+
+	const char* hardware_error = nullptr;
+	if (!VMManager::PerformEarlyHardwareChecks(&hardware_error))
+	{
+		Error::SetString(error, hardware_error);
+		return false;
+	}
+
+	std::string system_directory, save_directory;
+	if (!GetFrontendDirectory(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, "system", &system_directory, error) ||
+		!GetFrontendDirectory(RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY, "save", &save_directory, error))
+	{
+		return false;
+	}
+
+	const std::string bios_name = GetSelectedBios();
+	if (bios_name == BIOS_OPTION_NONE)
+	{
+		Error::SetString(error, "No BIOS is selected. Choose one in the core options.");
+		return false;
+	}
+
+	EmuFolders::AppRoot = system_directory;
+	EmuFolders::DataRoot = save_directory;
+	EmuFolders::Resources = Path::Combine(system_directory, "resources");
+	EmuFolders::Settings = Path::Combine(save_directory, "inis");
+	if (!CheckRuntimeResources(error))
+		return false;
+
+	if (!FileSystem::EnsureDirectoryExists(save_directory.c_str(), true, error))
+		return false;
+
+	LoadCoreSettings(bios_name);
+	if (!FileSystem::DirectoryExists(EmuFolders::Bios.c_str()) ||
+		!FileSystem::DirectoryExists(EmuFolders::MemoryCards.c_str()))
+	{
+		Error::SetStringFmt(error, "Failed to create the working directories under '{}'.", save_directory);
+		return false;
+	}
+
+	return PrepareBiosWorkingCopy(GetSourceBiosDirectory(system_directory), bios_name, error);
+}
 
 void Host::CommitBaseSettingChanges()
 {

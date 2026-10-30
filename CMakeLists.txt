@@ -36,6 +36,15 @@ detect_compiler()
 #-------------------------------------------------------------------------------
 # Include specific module
 include(BuildParameters)
+
+# The core is loaded into a frontend that may not have the Visual C++
+# redistributable next to it, so it carries the CRT itself. This has to precede
+# every target, and the dependency prefix built by libretro/deps matches it.
+if(MSVC)
+	set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
+	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
+
 include(SearchForStuff)
 
 # Must be done after SearchForStuff
@@ -47,6 +56,9 @@ add_subdirectory(common)
 
 # make pcsx2
 add_subdirectory(pcsx2)
+
+# libretro core
+add_subdirectory(libretro)
 
 # tests
 if(ENABLE_TESTS)

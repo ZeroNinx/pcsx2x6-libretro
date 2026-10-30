@@ -4,9 +4,22 @@ A libretro core project for PCSX2x6's NAMCO System 246 and System 256 arcade emu
 
 ## Status
 
-The M1 libretro Host integration is in development. A working core and libretro build target are not yet available.
+The M1 libretro Host integration is in development. The core builds and loads in a frontend, but it cannot start content yet.
 
 See the [development roadmap](docs/roadmap.md), [M1 integration plan](docs/M1.md), and [upstream sources](docs/upstream.md).
+
+## Building
+
+Windows x86-64 with Visual Studio 2022, CMake, Ninja, Git, and Python 3 is currently supported. From a Visual Studio x64 developer prompt:
+
+```text
+cmake -S libretro/deps -B build/deps -G Ninja -DCMAKE_INSTALL_PREFIX=<dependency-prefix>
+cmake --build build/deps
+cmake -S . -B build/core -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=<dependency-prefix>
+cmake --build build/core --target pcsx2x6_libretro
+```
+
+The core is written to `build/core/bin/pcsx2x6_libretro.dll`.
 
 ## Upstream projects
 

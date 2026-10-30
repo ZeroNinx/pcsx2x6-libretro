@@ -10,7 +10,9 @@ Retained emulation, resource, and third-party source files match this revision. 
 
 ## Build differences
 
-The root and emulator CMake files define the emulation libraries and optional unit tests. Dependency discovery and build helpers support these targets. Core dependency acquisition and version records will be defined with the libretro build target.
+The root and emulator CMake files define the emulation libraries, the `pcsx2x6_libretro` shared library, and optional unit tests. Multi-ISA compilation is the default so that one core runs across supported CPUs, and MSVC builds use the static CRT.
+
+`libretro/deps/` builds and pins the static libraries the core links. Its revisions match the PCSX2x6 Windows dependency set, except for shaderc, which is pinned to a newer tag with a newer glslang revision as explained in that file. The recipe is adapted from the [PCEE2](https://github.com/WizzardSK/pcee2-libretro) dependency build at `5719627731beb90e379ff1be1223391b7f563b3b`. `libretro/libretro.h` is the libretro API header from the same PCEE2 revision.
 
 ## Resources and notices
 

@@ -995,7 +995,6 @@ set(pcsx2RecordingHeaders
 set(pcsx2WindowsSources
 	CDVD/Windows/DriveUtility.cpp
 	CDVD/Windows/IOCtlSrc.cpp
-	windows/Optimus.cpp
 )
 
 # x86 sources

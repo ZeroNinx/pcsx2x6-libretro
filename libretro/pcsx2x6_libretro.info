@@ -1,0 +1,36 @@
+# Software Information
+display_name = "Namco - System 246/256 (PCSX2x6)"
+authors = "PCSX2 Team|PCSX2x6 contributors"
+supported_extensions = "acgame"
+corename = "PCSX2x6"
+categories = "Emulator"
+license = "GPLv3"
+permissions = ""
+display_version = "0.0.0"
+
+# Hardware Information
+manufacturer = "Namco"
+systemname = "System 246/256"
+systemid = "namco_system_246"
+
+# Libretro Features
+supports_no_game = "false"
+savestate = "false"
+cheats = "false"
+input_descriptors = "false"
+memory_descriptors = "false"
+libretro_saves = "false"
+core_options = "false"
+load_subsystem = "false"
+hw_render = "false"
+needs_fullpath = "true"
+disk_control = "false"
+is_experimental = "true"
+
+# Firmware / BIOS
+firmware_count = 1
+firmware0_desc = "System 246/256 BIOS image in the pcsx2x6 folder"
+firmware0_path = "pcsx2x6"
+firmware0_opt = "false"
+
+description = "NAMCO System 246 and System 256 arcade emulation based on PCSX2x6."

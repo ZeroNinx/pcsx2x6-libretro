@@ -1,6 +1,6 @@
 # Development Roadmap
 
-Planning snapshot: 2026-10-30. This document defines milestone boundaries and acceptance criteria. Detailed implementation TODOs will be prepared separately for each milestone.
+Planning snapshot: 2026-10-30. This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 contains the initial implementation breakdown; later milestones will be expanded when entered.
 
 ## Objective and initial scope
 
@@ -14,12 +14,12 @@ The source layout will retain upstream directories such as `pcsx2/`, `common/`, 
 
 | Milestone | Question answered | Main result |
 | --- | --- | --- |
-| M0 — Establish baselines | Do the two reference builds work independently? | Reproducible PCSX2x6 and PCEE2 reference builds with bounded smoke checks |
-| M1 — Minimal libretro Host | Can the frontend load the library and manage its lifetime safely? | Shared-library target, Host adapter, VM lifecycle boundary, logging |
-| M2 — Boot one System246 game | Does the existing arcade boot path survive the new Host? | One System246 title reaches an agreed startup checkpoint |
-| M3 — Basic video, audio, and input | Does the playable core preserve standalone behavior? | One functional presentation path, audio delivery, JVS input, save-data handling |
-| M4 — Investigate scheduling | Which synchronization choices improve the measured workload? | Scheduling analysis and a measured decision for each proposed change |
-| M5 — Performance and compatibility | Which additional targets and workloads justify further work? | Separately scoped optimization and compatibility improvements |
+| [M0 — Establish baselines](M0.md) | Do the two reference builds work independently? | Reproducible PCSX2x6 and PCEE2 reference builds with bounded smoke checks |
+| [M1 — Minimal libretro Host](M1.md) | Can the frontend load the library and manage its lifetime safely? | Shared-library target, Host adapter, VM lifecycle boundary, logging |
+| [M2 — Boot one System246 game](M2.md) | Does the existing arcade boot path survive the new Host? | One System246 title reaches an agreed startup checkpoint |
+| [M3 — Basic video, audio, and input](M3.md) | Does the playable core preserve standalone behavior? | One functional presentation path, audio delivery, JVS input, save-data handling |
+| [M4 — Investigate scheduling](M4.md) | Which synchronization choices improve the measured workload? | Scheduling analysis and a measured decision for each proposed change |
+| [M5 — Performance and compatibility](M5.md) | Which additional targets and workloads justify further work? | Separately scoped optimization and compatibility improvements |
 
 M0 precedes integration. M1 establishes the Host boundary; M2 validates arcade boot; M3 establishes the functional reference for M4 and M5. Limited display or device plumbing may be implemented earlier when required by VM initialization or boot diagnosis.
 
@@ -135,4 +135,4 @@ Before implementing a milestone, its separate TODO will identify:
 - Small implementation steps and expected artifacts.
 - A bounded validation case, acceptance evidence, and conditions for stopping an unsuccessful approach.
 
-Routine validation stops once the agreed checkpoint, input behavior, and normal shutdown have been established. Longer gameplay runs or broader repetition need a specific unresolved issue or performance question. Detailed TODOs and implementation remain future work for each milestone.
+Routine validation stops once the agreed checkpoint, input behavior, and normal shutdown have been established. Longer gameplay runs or broader repetition need a specific unresolved issue or performance question. Milestone checklists track reviewable project artifacts and implementation scope. Machine-specific execution results and acceptance records remain outside this repository.

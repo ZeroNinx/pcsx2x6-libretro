@@ -4,9 +4,9 @@ A project to bring PCSX2x6's NAMCO System 246 and System 256 arcade emulation to
 
 ## Status
 
-The project is in the research and planning stage. No emulator source code or working libretro core is included yet, and there is currently no build or run target.
+The project is preparing the M1 libretro Host integration. No emulator source code or working libretro core is included yet, and there is currently no build or run target.
 
-See the [development roadmap](docs/roadmap.md) and [baseline definition](docs/baseline.md).
+See the [development roadmap](docs/roadmap.md), [baseline definition](docs/baseline.md), and [M1 integration plan](docs/M1.md). Each milestone has a separate document linked from the roadmap.
 
 ## Upstream projects
 

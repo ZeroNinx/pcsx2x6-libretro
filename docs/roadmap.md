@@ -8,7 +8,7 @@ Build a libretro core that preserves PCSX2x6's NAMCO System 246 / 256 emulation 
 
 The initial implementation target is desktop Windows x86-64 with one fixed RetroArch version and one graphics presentation path. Additional platforms, graphics backends, and arcade peripherals are later work. There is no frame-rate or latency improvement target for the first functional core.
 
-The source layout will retain upstream directories such as `pcsx2/`, `common/`, `cmake/`, `bin/`, and `3rdparty/`, with a separate `libretro/` frontend directory. This keeps the integration boundary visible and makes future upstream comparisons practical. Imported source retains its copyright and license notices under the project's GPLv3 licensing.
+The emulation source keeps its upstream paths under `pcsx2/` and `common/`, with a separate `libretro/` frontend. Build support, runtime resources, and dependencies remain under `cmake/`, `bin/`, and `3rdparty/`. Imported code retains its copyright and license notices under the project's GPLv3 licensing.
 
 ## Milestones at a glance
 
@@ -48,14 +48,14 @@ M0 establishes runnable build and lifecycle references. Rendering correctness, a
 
 Scope includes a shared-library build, libretro exports and callback registration, configuration and resource initialization, frontend logging, and a Host adapter around VM initialization, CPU-thread execution, stopping, and cleanup. PCEE2 supplies the primary design reference; its code must be adapted to the selected x6 revision rather than assumed to be directly interchangeable.
 
-VM lifetime follows x6's VMManager flow. Minimum GS, audio, or device hooks required for real VM initialization belong here as necessary plumbing. A library that exports the ABI but only simulates VM state changes does not complete this milestone.
+VM lifetime follows x6's VMManager flow. M1 also repairs incomplete arcade startup rollback, pairs page-fault-handler ownership with VM-memory lifetime, and resolves the selected graphics path's runtime dependencies. These are focused correctness prerequisites, not scheduling optimizations. The CPU worker is created on first content load; the CPU thread owns VM state transitions. Minimum GS, audio, or device hooks required for real VM initialization belong here as necessary plumbing. A library that exports the ABI but only simulates VM state changes does not complete this milestone. The detailed contract is in [M1](M1.md).
 
 **Exit criteria:**
 
 - The frontend loads and unloads the library, with working initialization and deinitialization.
-- At least one real VM initialization/shutdown cycle completes using a known baseline case or a suitable diagnostic boot path; a visible game checkpoint is not required yet.
+- At least one real VM initialization/shutdown cycle completes using a known baseline case or a suitable diagnostic boot path; a visible game checkpoint is not required yet. The current concrete case is the isolated NM00002 copy specified in [M1](M1.md).
 - CPU-thread ownership, work dispatch, stop requests, and callback responsibilities are explicit.
-- A controlled startup failure produces an actionable log, cleans up partial initialization, and allows another attempt.
+- Preflight rejection and a controlled startup failure after media open both produce actionable logs, clean up their resources/state, and allow another attempt.
 - The Host can stop during startup and release resources without exiting the frontend process.
 
 **Deferred:** complete System246 boot coverage, full media delivery, gameplay, and performance work. This milestone establishes synchronization correctness; M4 does not postpone that requirement.
@@ -75,6 +75,8 @@ Scope includes `.acgame` recognition and metadata, BIOS selection, boot ELF and 
 - Minimal frame presentation is available to confirm the checkpoint when needed. This can be brought forward from M3; it does not imply complete audio/video support.
 - Missing BIOS, ELF, dongle, or media is reported as a recoverable load failure.
 - Writable data is separated from immutable reference inputs, and normal close performs the required device shutdown and persistence.
+
+Writable-state handling includes SRAM/cards and BIOS-side `.nvm`/`.mec` files. Resolve the known SRAM read-handle and write-protection defects as described in [M2](M2.md), independently of libretro-specific path adaptation.
 
 **Deferred:** additional board variants, multiple media arrangements, complete input layouts, and broad compatibility claims.
 

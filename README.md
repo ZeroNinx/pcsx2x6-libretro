@@ -1,12 +1,12 @@
 # pcsx2x6-libretro
 
-A project to bring PCSX2x6's NAMCO System 246 and System 256 arcade emulation to libretro frontends such as RetroArch.
+A libretro core project for PCSX2x6's NAMCO System 246 and System 256 arcade emulation, designed to be loaded by frontends such as RetroArch.
 
 ## Status
 
-The project is preparing the M1 libretro Host integration. No emulator source code or working libretro core is included yet, and there is currently no build or run target.
+The M1 libretro Host integration is in development. A working core and libretro build target are not yet available.
 
-See the [development roadmap](docs/roadmap.md), [baseline definition](docs/baseline.md), and [M1 integration plan](docs/M1.md). Each milestone has a separate document linked from the roadmap.
+See the [development roadmap](docs/roadmap.md), [M1 integration plan](docs/M1.md), and [upstream sources](docs/upstream.md).
 
 ## Upstream projects
 
@@ -20,4 +20,4 @@ This project is independent and is not affiliated with or endorsed by these proj
 
 GNU General Public License, version 3. See [COPYING.GPLv3](COPYING.GPLv3).
 
-Upstream copyright and license notices will be preserved when source code is imported.
+Imported upstream source keeps its copyright and license notices, including the notices of third-party components under `3rdparty/`.

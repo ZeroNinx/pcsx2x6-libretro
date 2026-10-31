@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "LibretroHost.h"
+#include "LibretroSession.h"
 
 #include "Achievements.h"
 #include "Config.h"
@@ -30,7 +31,9 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <mutex>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -61,6 +64,10 @@ namespace
 
 	// Outlives every session because the emulator keeps a pointer to it.
 	MemorySettingsInterface s_settings;
+
+	// ImGui references the font data without copying it, so the mapping lasts until
+	// the GS has shut down.
+	std::span<const u8> s_font_data;
 
 	std::vector<std::string> s_bios_option_values;
 	retro_core_option_v2_definition s_core_option_definitions[2];
@@ -163,6 +170,18 @@ static std::string GetSourceBiosDirectory(const std::string& system_directory)
 	return Path::Combine(system_directory, "bios");
 }
 
+// Compares the directories themselves, so differences in case, separators, and links
+// do not hide an overlap. A directory that does not exist yet cannot overlap.
+static bool IsSameDirectory(const std::string& first, const std::string& second)
+{
+	const auto to_path = [](const std::string& path) {
+		return std::filesystem::path(std::u8string(path.begin(), path.end()));
+	};
+
+	std::error_code error;
+	return std::filesystem::equivalent(to_path(first), to_path(second), error);
+}
+
 static void RegisterCoreOptions()
 {
 	s_bios_option_values = {BIOS_OPTION_NONE};
@@ -244,6 +263,36 @@ static bool CheckRuntimeResources(Error* error)
 	}
 
 	return true;
+}
+
+// Only called without an active session: the GS, and with it ImGui, is closed.
+static bool LoadFonts(Error* error)
+{
+	if (!s_font_data.empty())
+		return true;
+
+	const std::string path = Path::Combine(EmuFolders::Resources, "fonts" FS_OSPATH_SEPARATOR_STR "Roboto-Regular.ttf");
+	s_font_data = FileSystem::MapBinaryFileForRead(path.c_str());
+	if (s_font_data.empty())
+	{
+		Error::SetStringFmt(error, "Failed to load font '{}'.", path);
+		return false;
+	}
+
+	ImGuiManager::FontInfo font{};
+	font.data = s_font_data;
+	ImGuiManager::SetFonts({font});
+	return true;
+}
+
+void LibretroHost::ReleaseFonts()
+{
+	if (s_font_data.empty())
+		return;
+
+	ImGuiManager::SetFonts({});
+	FileSystem::UnmapFile(s_font_data);
+	s_font_data = {};
 }
 
 static void ApplyCoreSettings(const std::string& bios_name)
@@ -343,11 +392,11 @@ static bool PrepareBiosWorkingCopy(const std::string& source_directory, const st
 	return true;
 }
 
-bool LibretroHost::PrepareContent(const char* content_path, Error* error)
+bool LibretroHost::PrepareContent(const char* content_path, std::string* boot_filename, Error* error)
 {
 	// The Windows file functions reject absolute paths with forward slashes, which
 	// frontends can legitimately pass.
-	const std::string native_content_path = content_path ? Path::ToNativePath(content_path) : std::string();
+	std::string native_content_path = content_path ? Path::ToNativePath(content_path) : std::string();
 	if (!FileSystem::FileExists(native_content_path.c_str()))
 	{
 		Error::SetStringFmt(error, "Content file '{}' does not exist.", native_content_path);
@@ -385,8 +434,20 @@ bool LibretroHost::PrepareContent(const char* content_path, Error* error)
 	EmuFolders::DataRoot = save_directory;
 	EmuFolders::Resources = Path::Combine(system_directory, "resources");
 	EmuFolders::Settings = Path::Combine(save_directory, "inis");
-	if (!CheckRuntimeResources(error))
+	if (!CheckRuntimeResources(error) || !LoadFonts(error))
 		return false;
+
+	// The default settings put the BIOS working copy in <data root>/bios. Nothing is
+	// written below the save directory before this check.
+	const std::string source_bios_directory = GetSourceBiosDirectory(system_directory);
+	if (IsSameDirectory(source_bios_directory, Path::Combine(save_directory, "bios")))
+	{
+		Error::SetStringFmt(error,
+			"The system and save directories share the BIOS folder '{}'. BIOS working files would overwrite "
+			"the source BIOS; use a separate save directory.",
+			source_bios_directory);
+		return false;
+	}
 
 	if (!FileSystem::EnsureDirectoryExists(save_directory.c_str(), true, error))
 		return false;
@@ -399,7 +460,11 @@ bool LibretroHost::PrepareContent(const char* content_path, Error* error)
 		return false;
 	}
 
-	return PrepareBiosWorkingCopy(GetSourceBiosDirectory(system_directory), bios_name, error);
+	if (!PrepareBiosWorkingCopy(source_bios_directory, bios_name, error))
+		return false;
+
+	*boot_filename = std::move(native_content_path);
+	return true;
 }
 
 void Host::CommitBaseSettingChanges()
@@ -546,8 +611,7 @@ void Host::OnSaveStateSaved(const std::string_view filename)
 
 void Host::RunOnCPUThread(std::function<void()> function, bool block /* = false */)
 {
-	// There is no CPU thread until content loading exists, so nothing can be queued.
-	Console.Error("Dropped a CPU thread request: no CPU thread is running");
+	LibretroSession::RunOnCPUThread(std::move(function), block);
 }
 
 void Host::RunOnGSThread(std::function<void()> function)
@@ -558,6 +622,7 @@ void Host::RunOnGSThread(std::function<void()> function)
 
 void Host::PumpMessagesOnCPUThread()
 {
+	LibretroSession::PumpCPUThread();
 }
 
 void Host::RefreshGameListAsync(bool invalidate_cache)
@@ -596,7 +661,8 @@ void Host::RequestExitBigPicture()
 
 void Host::RequestVMShutdown(bool allow_confirm, bool allow_save_state, bool default_save_state)
 {
-	Console.Error("Ignoring VM shutdown request: no VM is running");
+	Console.Warning("The emulator requested a VM shutdown");
+	LibretroSession::RequestStop();
 }
 
 void Host::OnAchievementsLoginRequested(Achievements::LoginRequestReason reason)

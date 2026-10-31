@@ -10,6 +10,8 @@ target_sources(pcsx2x6_libretro PRIVATE
 	Libretro.cpp
 	LibretroHost.cpp
 	LibretroHost.h
+	LibretroSession.cpp
+	LibretroSession.h
 	libretro.h
 )
 

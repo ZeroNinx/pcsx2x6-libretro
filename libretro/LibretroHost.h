@@ -9,6 +9,7 @@
 #include <string_view>
 
 class Error;
+struct VMBootParameters;
 
 namespace LibretroHost
 {
@@ -28,8 +29,8 @@ namespace LibretroHost
 	void ReportLoadFailure(std::string_view message);
 
 	/// Validates a content request and prepares the directories, settings, and BIOS it
-	/// needs. On success, returns the manifest path to boot in native form.
-	bool PrepareContent(const char* content_path, std::string* boot_filename, Error* error);
+	/// needs. On success, returns the parameters that boot the manifest.
+	bool PrepareContent(const char* content_path, VMBootParameters* boot_params, Error* error);
 
 	/// Releases the font data loaded for the GS. Only valid once the CPU thread has ended.
 	void ReleaseFonts();

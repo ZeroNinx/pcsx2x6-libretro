@@ -7,6 +7,7 @@
 #include <string>
 
 class Error;
+struct VMBootParameters;
 
 /// Owns the CPU thread and the VM session it runs. libretro callbacks only publish
 /// requests and wait for their acknowledgement; VM state changes happen on the CPU thread.
@@ -14,7 +15,7 @@ namespace LibretroSession
 {
 	/// Creates the CPU thread if needed and boots the VM. Returns after the boot either
 	/// succeeded or was completely unwound.
-	bool Start(std::string boot_filename, Error* error);
+	bool Start(VMBootParameters boot_params, Error* error);
 
 	/// Lets the VM run to its next vsync and waits for it.
 	void RunFrame();

@@ -1,6 +1,6 @@
 # Development Roadmap
 
-This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 and the M2.1 reference definition are complete; M2.2–M2.6 implementation has not started.
+This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 and M2.1–M2.3 are complete; M2.4–M2.6 implementation has not started.
 
 ## Objective and initial scope
 

@@ -56,7 +56,7 @@ namespace
 
 	std::deque<std::function<void()>> s_cpu_work;
 
-	std::optional<std::string> s_boot_request;
+	std::optional<VMBootParameters> s_boot_request;
 	bool s_boot_done = false;
 	bool s_boot_succeeded = false;
 	std::string s_boot_error;
@@ -146,15 +146,12 @@ static void WaitWhilePaused()
 	VMManager::SetState(VMState::Stopping);
 }
 
-static void RunSession(const std::string& boot_filename)
+static void RunSession(const VMBootParameters& boot_params)
 {
 	VMManager::ApplySettings();
 
-	VMBootParameters params;
-	params.filename = boot_filename;
-
 	Error error;
-	const VMBootResult result = VMManager::Initialize(params, &error);
+	const VMBootResult result = VMManager::Initialize(boot_params, &error);
 	if (result != VMBootResult::StartupSuccess)
 	{
 		FinishBoot(false, error.IsValid() ? error.GetDescription() : std::string("VM initialization failed."));
@@ -239,11 +236,11 @@ static void CPUThreadLoop()
 		}
 		else if (s_boot_request.has_value())
 		{
-			const std::string boot_filename = std::move(*s_boot_request);
+			const VMBootParameters boot_params = std::move(*s_boot_request);
 			s_boot_request.reset();
 
 			lock.unlock();
-			RunSession(boot_filename);
+			RunSession(boot_params);
 			lock.lock();
 		}
 		else
@@ -320,7 +317,7 @@ static bool EnsureCPUThread(std::unique_lock<std::mutex>& lock, Error* error)
 	return true;
 }
 
-bool LibretroSession::Start(std::string boot_filename, Error* error)
+bool LibretroSession::Start(VMBootParameters boot_params, Error* error)
 {
 	std::unique_lock lock(s_mutex);
 	s_frontend_thread_id = std::this_thread::get_id();
@@ -335,7 +332,7 @@ bool LibretroSession::Start(std::string boot_filename, Error* error)
 
 	// From here on, a stop request cancels the startup.
 	s_session_state = SessionState::Starting;
-	s_boot_request = std::move(boot_filename);
+	s_boot_request = std::move(boot_params);
 	s_boot_done = false;
 	s_stop_requested = false;
 	s_cv.notify_all();

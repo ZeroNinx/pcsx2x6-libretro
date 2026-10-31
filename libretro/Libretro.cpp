@@ -6,6 +6,8 @@
 #include "LibretroSession.h"
 #include "libretro.h"
 
+#include "VMManager.h"
+
 #include "common/Console.h"
 #include "common/Error.h"
 
@@ -115,8 +117,8 @@ void retro_deinit(void)
 bool retro_load_game(const retro_game_info* game)
 {
 	Error error;
-	std::string boot_filename;
-	if (!LibretroHost::PrepareContent(game ? game->path : nullptr, &boot_filename, &error))
+	VMBootParameters boot_params;
+	if (!LibretroHost::PrepareContent(game ? game->path : nullptr, &boot_params, &error))
 	{
 		LibretroHost::ReportLoadFailure(error.GetDescription());
 		return false;
@@ -129,7 +131,7 @@ bool retro_load_game(const retro_game_info* game)
 		return false;
 	}
 
-	if (!LibretroSession::Start(std::move(boot_filename), &error))
+	if (!LibretroSession::Start(std::move(boot_params), &error))
 	{
 		LibretroHost::ReportLoadFailure(error.GetDescription());
 		return false;

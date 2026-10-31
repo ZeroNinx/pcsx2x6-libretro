@@ -31,7 +31,6 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
-#include <filesystem>
 #include <mutex>
 #include <span>
 #include <string>
@@ -42,6 +41,7 @@ namespace
 {
 	constexpr const char* DIRECTORY_NAME = "pcsx2x6";
 	constexpr const char* CONTENT_EXTENSION = "acgame";
+	constexpr const char* ARCADE_SAVE_DIRECTORY_NAME = "arcade";
 
 	constexpr const char* BIOS_OPTION_KEY = "pcsx2x6_bios";
 	constexpr const char* BIOS_OPTION_NONE = "none";
@@ -168,18 +168,6 @@ static bool GetFrontendDirectory(unsigned command, const char* description, std:
 static std::string GetSourceBiosDirectory(const std::string& system_directory)
 {
 	return Path::Combine(system_directory, "bios");
-}
-
-// Compares the directories themselves, so differences in case, separators, and links
-// do not hide an overlap. A directory that does not exist yet cannot overlap.
-static bool IsSameDirectory(const std::string& first, const std::string& second)
-{
-	const auto to_path = [](const std::string& path) {
-		return std::filesystem::path(std::u8string(path.begin(), path.end()));
-	};
-
-	std::error_code error;
-	return std::filesystem::equivalent(to_path(first), to_path(second), error);
 }
 
 static void RegisterCoreOptions()
@@ -392,7 +380,7 @@ static bool PrepareBiosWorkingCopy(const std::string& source_directory, const st
 	return true;
 }
 
-bool LibretroHost::PrepareContent(const char* content_path, std::string* boot_filename, Error* error)
+bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* boot_params, Error* error)
 {
 	// The Windows file functions reject absolute paths with forward slashes, which
 	// frontends can legitimately pass.
@@ -438,9 +426,10 @@ bool LibretroHost::PrepareContent(const char* content_path, std::string* boot_fi
 		return false;
 
 	// The default settings put the BIOS working copy in <data root>/bios. Nothing is
-	// written below the save directory before this check.
+	// written below the save directory before this check; a directory that does not
+	// exist yet cannot overlap.
 	const std::string source_bios_directory = GetSourceBiosDirectory(system_directory);
-	if (IsSameDirectory(source_bios_directory, Path::Combine(save_directory, "bios")))
+	if (FileSystem::IsSamePath(source_bios_directory.c_str(), Path::Combine(save_directory, "bios").c_str()))
 	{
 		Error::SetStringFmt(error,
 			"The system and save directories share the BIOS folder '{}'. BIOS working files would overwrite "
@@ -463,7 +452,10 @@ bool LibretroHost::PrepareContent(const char* content_path, std::string* boot_fi
 	if (!PrepareBiosWorkingCopy(source_bios_directory, bios_name, error))
 		return false;
 
-	*boot_filename = std::move(native_content_path);
+	// SRAM is a core extension of the save layout: one image per gameid, seeded from the
+	// manifest's image on first use. x6 resolves the gameid and creates the game folder.
+	boot_params->filename = std::move(native_content_path);
+	boot_params->arcade_save_directory = Path::Combine(save_directory, ARCADE_SAVE_DIRECTORY_NAME);
 	return true;
 }
 

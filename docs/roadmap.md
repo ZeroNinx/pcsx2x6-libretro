@@ -1,6 +1,6 @@
 # Development Roadmap
 
-This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 and M2 are complete; M3 has not started.
+This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 and M2 are complete; M3 is planned in [M3](M3.md), with implementation not yet started.
 
 ## Objective and initial scope
 
@@ -84,7 +84,7 @@ Writable-state handling includes SRAM/cards and BIOS-side `.nvm`/`.mec` files. R
 
 **Purpose:** establish a functional core whose observable behavior can be compared with standalone x6.
 
-Use one presentation path, such as software rendering with framebuffer readback or the smallest practical bridge to an existing backend. Software rendering does not imply that presentation requires no graphics context. The path is chosen after the M0/PCEE2 investigation; zero-copy output and additional backends are not prerequisites.
+Continue M2's Vulkan Surfaceless device, separate GS thread and synchronous readback. Replace fixed-canvas assumptions with owned frame geometry and actual VM timing, and establish input/frame and audio/frame association before considering a different presentation or threading model. Hardware-image handoff, border cropping and additional backends are not prerequisites. The sequence and interface contracts are defined in [M3](M3.md).
 
 Scope includes frame delivery and geometry, actual VM refresh rate, sample-rate reporting, bounded audio buffering, JVS button and coin input, Service/Test controls, reset, content reload, and persistent arcade data. The frontend controls overall pacing; the Host must coordinate VM progress with `retro_run()` rather than retain a competing desktop limiter. API responsibilities follow the [libretro core development documentation](https://docs.libretro.com/development/cores/developing-cores/).
 

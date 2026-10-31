@@ -80,6 +80,7 @@ static constexpr u32 FASTMEM_PAGE_COUNT = FASTMEM_AREA_SIZE / VTLB_PAGE_SIZE;
 static constexpr u32 NO_FASTMEM_MAPPING = 0xFFFFFFFFu;
 
 static std::unique_ptr<SharedMemoryMappingArea> s_fastmem_area;
+static bool s_page_fault_handler_installed = false;
 static std::vector<u32> s_fastmem_virtual_mapping; // maps vaddr -> mainmem offset
 static std::unordered_multimap<u32, u32> s_fastmem_physical_mapping; // maps mainmem offset -> vaddr
 static std::unordered_map<uptr, LoadstoreBackpatchInfo> s_fastmem_backpatch_info;
@@ -1345,6 +1346,7 @@ bool vtlb_Core_Alloc()
 		Host::ReportErrorAsync("Failed to install page fault handler.", error.GetDescription());
 		return false;
 	}
+	s_page_fault_handler_installed = true;
 
 	return true;
 }
@@ -1368,6 +1370,14 @@ void vtlb_Alloc_Ppmap()
 
 void vtlb_Core_Free()
 {
+	// Every user of the mappings has stopped by now. The handler goes first, so no
+	// fault can be routed into the fastmem state being torn down below.
+	if (s_page_fault_handler_installed)
+	{
+		PageFaultHandler::Remove();
+		s_page_fault_handler_installed = false;
+	}
+
 	vtlbdata.vmap = nullptr;
 	vtlbdata.ppmap = nullptr;
 

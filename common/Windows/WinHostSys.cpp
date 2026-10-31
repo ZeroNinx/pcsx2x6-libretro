@@ -307,6 +307,7 @@ namespace PageFaultHandler
 	static std::recursive_mutex s_exception_handler_mutex;
 	static bool s_in_exception_handler = false;
 	static bool s_installed = false;
+	static PVOID s_handler_handle = nullptr;
 } // namespace PageFaultHandler
 
 LONG PageFaultHandler::ExceptionHandler(PEXCEPTION_POINTERS exi)
@@ -354,8 +355,21 @@ bool PageFaultHandler::Install(Error* error)
 		return false;
 	}
 
+	s_handler_handle = handle;
 	s_installed = true;
 	return true;
+}
+
+void PageFaultHandler::Remove()
+{
+	std::unique_lock lock(s_exception_handler_mutex);
+	pxAssertRel(s_installed, "Page fault handler has not been installed.");
+
+	if (!RemoveVectoredExceptionHandler(s_handler_handle))
+		Console.Error("RemoveVectoredExceptionHandler() failed");
+
+	s_handler_handle = nullptr;
+	s_installed = false;
 }
 
 bool PageFaultHandler::InstallSecondaryThread() { return true; }

@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | [PCSX2x6](https://github.com/PS2Homebrew-arcade/pcsx2x6) | `583f0e90907d69bb2db670f570d0865260fcc71b` | Selected source snapshot; upstream Git history is not merged |
 
-Retained emulation, resource, and third-party source files match this revision. Project build configuration is adapted for the libretro integration. Source paths are preserved for upstream comparisons.
+Retained resource and third-party source files match this revision. Emulation source matches it except for the project changes listed below. Project build configuration is adapted for the libretro integration. Source paths are preserved for upstream comparisons.
 
 ## Build differences
 
@@ -19,6 +19,17 @@ The root and emulator CMake files define the emulation libraries, the `pcsx2x6_l
 Runtime resources under `bin/resources/` include `GameIndex.yaml`, `fonts/`, and `shaders/`. Retained third-party components keep their license and copyright notices. The upstream distribution notice is `bin/docs/ThirdPartyLicenses.html`.
 
 The Windows source dependency `3rdparty/winpixeventruntime/` includes upstream-vendored import libraries and DLLs.
+
+## Emulation changes
+
+The first three changes make the emulator safe to load and unload repeatedly inside a frontend process and are candidates for upstream contribution. The last one applies only to a library build.
+
+| Change | Files |
+| --- | --- |
+| The page-fault handler can be removed; fastmem allocation installs it and fastmem release removes it | `common/HostSys.h`, `common/Windows/WinHostSys.cpp`, `common/Linux/LnxHostSys.cpp`, `common/Darwin/DarwinMisc.cpp`, `pcsx2/vtlb.cpp` |
+| The VU1 thread is closed by the code that opened it instead of by a static destructor | `pcsx2/x86/microVU.cpp`, `pcsx2/VMManager.cpp` |
+| A failed CPU-thread initialization releases what it acquired | `pcsx2/VMManager.cpp`, `pcsx2/VMManager.h` |
+| The Windows-only `Optimus.cpp` export is removed because it only takes effect in an executable | `pcsx2/windows/Optimus.cpp`, `pcsx2/CMakeLists.txt` |
 
 ## Version identity
 

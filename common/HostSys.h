@@ -134,6 +134,10 @@ namespace PageFaultHandler
 	HandlerResult HandlePageFault(void* exception_pc, void* fault_address, bool is_write);
 	bool Install(Error* error = nullptr);
 	bool InstallSecondaryThread();
+
+	/// Removes the handler installed by Install(). Code that may be unloaded while the
+	/// process keeps running must not leave the process pointing at it.
+	void Remove();
 } // namespace PageFaultHandler
 
 class SharedMemoryMappingArea

@@ -294,6 +294,7 @@ namespace VMManager
 		void SetBlockSystemConsole(bool block);
 
 		/// Initializes common host state, called on the CPU thread.
+		/// On failure, nothing is left to release and CPUThreadShutdown() must not be called.
 		bool CPUThreadInitialize();
 
 		/// Cleans up common host state, called on the CPU thread.

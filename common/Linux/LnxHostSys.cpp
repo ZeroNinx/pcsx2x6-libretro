@@ -222,6 +222,12 @@ namespace PageFaultHandler
 	static std::recursive_mutex s_exception_handler_mutex;
 	static bool s_in_exception_handler = false;
 	static bool s_installed = false;
+
+	// The handlers that were in place before Install(), restored by Remove().
+	static struct sigaction s_previous_sigsegv = {};
+#ifdef ARCH_ARM64
+	static struct sigaction s_previous_sigbus = {};
+#endif
 } // namespace PageFaultHandler
 
 #ifdef ARCH_ARM64
@@ -328,7 +334,7 @@ bool PageFaultHandler::Install(Error* error)
 	sa.sa_flags = SA_SIGINFO | SA_NODEFER;
 	sa.sa_sigaction = SignalHandler;
 
-	if (sigaction(SIGSEGV, &sa, nullptr) != 0)
+	if (sigaction(SIGSEGV, &sa, &s_previous_sigsegv) != 0)
 	{
 		Error::SetErrno(error, "sigaction() for SIGSEGV failed: ", errno);
 		return false;
@@ -336,15 +342,31 @@ bool PageFaultHandler::Install(Error* error)
 
 #ifdef ARCH_ARM64
 	// We can get SIGBUS on ARM64.
-	if (sigaction(SIGBUS, &sa, nullptr) != 0)
+	if (sigaction(SIGBUS, &sa, &s_previous_sigbus) != 0)
 	{
 		Error::SetErrno(error, "sigaction() for SIGBUS failed: ", errno);
+		sigaction(SIGSEGV, &s_previous_sigsegv, nullptr);
 		return false;
 	}
 #endif
 
 	s_installed = true;
 	return true;
+}
+
+void PageFaultHandler::Remove()
+{
+	std::unique_lock lock(s_exception_handler_mutex);
+	pxAssertRel(s_installed, "Page fault handler has not been installed.");
+
+	if (sigaction(SIGSEGV, &s_previous_sigsegv, nullptr) != 0)
+		Console.Error("Failed to restore the previous SIGSEGV handler: %d", errno);
+#ifdef ARCH_ARM64
+	if (sigaction(SIGBUS, &s_previous_sigbus, nullptr) != 0)
+		Console.Error("Failed to restore the previous SIGBUS handler: %d", errno);
+#endif
+
+	s_installed = false;
 }
 
 bool PageFaultHandler::InstallSecondaryThread() { return true; }

@@ -398,6 +398,10 @@ bool VMManager::Internal::CPUThreadInitialize()
 	Threading::SetNameOfCurrentThread("CPU Thread");
 	PerformanceMetrics::SetCPUThread(Threading::ThreadHandle::GetForCallingThread());
 
+	// A failed initialization releases what it acquired, so the caller only runs
+	// CPUThreadShutdown() after success.
+	ScopedGuard release_cpu_thread = []() { PerformanceMetrics::SetCPUThread(Threading::ThreadHandle()); };
+
 	// On Win32, we have a bunch of things which use COM (e.g. SDL, XAudio2, etc).
 	// We need to initialize COM first, before anything else does, because otherwise they might
 	// initialize it in single-threaded/apartment mode, which can't be changed to multithreaded.
@@ -408,6 +412,7 @@ bool VMManager::Internal::CPUThreadInitialize()
 		Host::ReportErrorAsync("Error", fmt::format("CoInitializeEx() failed: {:08X}", hr));
 		return false;
 	}
+	ScopedGuard uninitialize_com = &CoUninitialize;
 #endif
 
 	// Use the default rounding mode, just in case it differs on some platform.
@@ -425,8 +430,14 @@ bool VMManager::Internal::CPUThreadInitialize()
 	if (!SysMemory::Allocate())
 	{
 		Host::ReportErrorAsync("Error", "Failed to allocate VM memory.");
+		SysMemory::Release();
 		return false;
 	}
+
+#ifdef _WIN32
+	uninitialize_com.Cancel();
+#endif
+	release_cpu_thread.Cancel();
 
 	InitializeCPUProviders();
 
@@ -2949,7 +2960,10 @@ void VMManager::ShutdownCPUProviders()
 	// See the comment in the InitializeCPUProviders for an explaination why we
 	// still need to manage the MTVU thread.
 	if (vu1Thread.IsOpen())
+	{
 		vu1Thread.WaitVU();
+		vu1Thread.Close();
+	}
 #endif
 }
 

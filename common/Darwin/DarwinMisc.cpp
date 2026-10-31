@@ -381,6 +381,12 @@ namespace PageFaultHandler
 	static mach_port_t s_port = 0;
 #else
 	static void SignalHandler(int sig, siginfo_t* info, void* ctx);
+
+	// The handlers that were in place before Install(), restored by Remove().
+	static struct sigaction s_previous_sigbus = {};
+#ifdef ARCH_ARM64
+	static struct sigaction s_previous_sigsegv = {};
+#endif
 #endif
 
 	static std::recursive_mutex s_exception_handler_mutex;
@@ -557,6 +563,22 @@ bool PageFaultHandler::Install(Error* error)
 	return true;
 }
 
+void PageFaultHandler::Remove()
+{
+	std::unique_lock lock(s_exception_handler_mutex);
+	pxAssertRel(s_installed, "Page fault handler has not been installed.");
+
+	// Threads hold send rights to the port until they exit or are reset. Dropping the
+	// installing thread's port and the task's own send right lets the handler thread
+	// receive its no-senders notification and exit.
+	thread_set_exception_ports(mach_thread_self(), EXC_MASK_BAD_ACCESS, MACH_PORT_NULL, EXCEPTION_DEFAULT, THREAD_STATE_NONE);
+	if (const kern_return_t r = mach_port_deallocate(mach_task_self(), s_port))
+		Console.ErrorFmt("mach_port_deallocate: {:x}", r);
+
+	s_port = 0;
+	s_installed = false;
+}
+
 bool PageFaultHandler::InstallSecondaryThread()
 {
 	kern_return_t r = thread_set_exception_ports(mach_thread_self(), EXC_MASK_BAD_ACCESS, s_port, EXCEPTION_STATE | MACH_EXCEPTION_CODES, THREAD_STATE64);
@@ -617,16 +639,17 @@ bool PageFaultHandler::Install(Error* error)
 	sa.sa_sigaction = SignalHandler;
 
 	// MacOS uses SIGBUS for memory permission violations, as well as SIGSEGV on ARM64.
-	if (sigaction(SIGBUS, &sa, nullptr) != 0)
+	if (sigaction(SIGBUS, &sa, &s_previous_sigbus) != 0)
 	{
 		Error::SetErrno(error, "sigaction() for SIGBUS failed: ", errno);
 		return false;
 	}
 
 #ifdef ARCH_ARM64
-	if (sigaction(SIGSEGV, &sa, nullptr) != 0)
+	if (sigaction(SIGSEGV, &sa, &s_previous_sigsegv) != 0)
 	{
 		Error::SetErrno(error, "sigaction() for SIGSEGV failed: ", errno);
+		sigaction(SIGBUS, &s_previous_sigbus, nullptr);
 		return false;
 	}
 #endif
@@ -636,6 +659,21 @@ bool PageFaultHandler::Install(Error* error)
 
 	s_installed = true;
 	return true;
+}
+
+void PageFaultHandler::Remove()
+{
+	std::unique_lock lock(s_exception_handler_mutex);
+	pxAssertRel(s_installed, "Page fault handler has not been installed.");
+
+	if (sigaction(SIGBUS, &s_previous_sigbus, nullptr) != 0)
+		Console.Error("Failed to restore the previous SIGBUS handler: %d", errno);
+#ifdef ARCH_ARM64
+	if (sigaction(SIGSEGV, &s_previous_sigsegv, nullptr) != 0)
+		Console.Error("Failed to restore the previous SIGSEGV handler: %d", errno);
+#endif
+
+	s_installed = false;
 }
 
 bool PageFaultHandler::InstallSecondaryThread() { return true; }

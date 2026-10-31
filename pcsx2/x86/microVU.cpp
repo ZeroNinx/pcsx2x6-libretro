@@ -324,8 +324,13 @@ void recMicroVU0::Shutdown()
 }
 void recMicroVU1::Shutdown()
 {
+	// Reserve() opened the thread. It runs microVU1 code, so it finishes its queued work
+	// and exits before that code is freed.
 	if (vu1Thread.IsOpen())
+	{
 		vu1Thread.WaitVU();
+		vu1Thread.Close();
+	}
 	mVUclose(microVU1);
 }
 

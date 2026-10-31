@@ -27,7 +27,8 @@ bool ACATA::TH::b_isIdle,
 std::condition_variable ACATA::TH::Idle_cv, ACATA::TH::ioReady;
 FILE* ACATA::TH::IMAGE;
 s64 ACATA::TH::IMAGESIZE;
-u32 ACATA::TH::sectorsize = ACATAPI::CONSTANTS::DVD_SECTORSIZE; //TODO: remove hardcode before testing HDD/CD games !
+// Transfer sector size. IO_OpenImage() sets it from the session's media and ATA commands set it per transfer.
+u32 ACATA::TH::sectorsize = ACATAPI::CONSTANTS::DVD_SECTORSIZE;
 u32 ACATA::TH::unitbytes;
 u32 ACATA::TH::unitdataoff;
 u32 ACATA::TH::nsector;
@@ -146,6 +147,19 @@ static bool DetectDiscImageLayout() {
 	return true;
 }
 
+// Logical sector size the manifest declares for this session's media; 0 when the type is unknown.
+static u32 GetDeclaredSectorSize() {
+	switch (ACATA::MediaType) {
+		case ACMEDIATYPE::ACHDD:
+			return ATA_SECTORSIZE;
+		case ACMEDIATYPE::ACCD:
+		case ACMEDIATYPE::ACDVD:
+			return ACATAPI::CONSTANTS::DVD_SECTORSIZE;
+		default:
+			return 0;
+	}
+}
+
 int ACATA::TH::IO_OpenImage() {
 	// Every session closes its image, so one still open here would be overwritten and leaked.
 	if (isCHD || ACATA::TH::IMAGE) {
@@ -154,15 +168,23 @@ int ACATA::TH::IO_OpenImage() {
 	}
 
 	open_error.clear();
+
+	// Each session starts from its own media declaration, never from the previous session's value.
+	const u32 declared_sector_size = GetDeclaredSectorSize();
+	if (declared_sector_size == 0)
+		Console.Warning("ACATA: unknown media type, the image sector size cannot be checked");
+	sectorsize = declared_sector_size != 0 ? declared_sector_size : ACATAPI::CONSTANTS::DVD_SECTORSIZE;
+
 	isCHD = ChdImage::IsChdFileName(ACATA::imgpath);
 	unitbytes = 0;
 	unitdataoff = 0;
 	if (isCHD) {
 		if (CHD.Open(ACATA::imgpath)) {
-			u32 secsize = CHD.GetSectorSize();
-			if (secsize != sectorsize) 
-				Console.ErrorFmt("ACATA: CHD sectorsize mismatches declaration {} vs {}", secsize, sectorsize);
-			sectorsize = secsize;
+			const u32 image_sector_size = CHD.GetSectorSize();
+			if (declared_sector_size != 0 && image_sector_size != declared_sector_size)
+				Console.ErrorFmt("ACATA: CHD logical sector size {} does not match the declared media sector size {}",
+					image_sector_size, declared_sector_size);
+			sectorsize = image_sector_size;
 			ACATA::TH::IMAGESIZE = (CHD.GetSectorCount() * sectorsize);
 		} else {
 			isCHD = false;

@@ -76,12 +76,12 @@ static inline std::optional<T> ReadFileInZipToContainer(zip_t* zip, const char* 
 		zip_stat_t zst;
 		if (zip_stat_index(zip, file_index, ZIP_FL_NOCASE, &zst) == 0)
 		{
-			zip_file_t* zf = zip_fopen_index(zip, file_index, ZIP_FL_NOCASE);
+			const std::unique_ptr<zip_file_t, int (*)(zip_file_t*)> zf = zip_fopen_index_managed(zip, file_index, ZIP_FL_NOCASE);
 			if (zf)
 			{
 				ret = T();
 				ret->resize(static_cast<size_t>(zst.size));
-				if (zip_fread(zf, ret->data(), ret->size()) != static_cast<zip_int64_t>(ret->size()))
+				if (zip_fread(zf.get(), ret->data(), ret->size()) != static_cast<zip_int64_t>(ret->size()))
 				{
 					ret.reset();
 				}

@@ -89,6 +89,9 @@ namespace FileSystem
 	/// Directory does not contain any files?
 	bool DirectoryIsEmpty(const char* path);
 
+	/// Both paths exist and refer to the same file or directory?
+	bool IsSamePath(const char* first, const char* second);
+
 	/// Delete file
 	bool DeleteFilePath(const char* path, Error* error = nullptr);
 

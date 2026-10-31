@@ -14,6 +14,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <numeric>
 
@@ -1149,6 +1150,17 @@ s64 FileSystem::GetPathFileSize(const char* Path)
 		return -1;
 
 	return sd.Size;
+}
+
+bool FileSystem::IsSamePath(const char* first, const char* second)
+{
+	const auto to_path = [](const std::string_view path) {
+		return std::filesystem::path(std::u8string(path.begin(), path.end()));
+	};
+
+	// Comparing file identities sees through case, separators, relative components and links.
+	std::error_code error;
+	return std::filesystem::equivalent(to_path(first), to_path(second), error);
 }
 
 std::optional<std::time_t> FileSystem::GetFileTimestamp(const char* path)

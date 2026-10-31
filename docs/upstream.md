@@ -22,7 +22,7 @@ The Windows source dependency `3rdparty/winpixeventruntime/` includes upstream-v
 
 ## Emulation changes
 
-The first four changes make the emulator safe to load, restart, and unload inside a frontend process and are candidates for upstream contribution. The last two apply to this project's single-library build.
+The first five changes make the emulator safe to load, restart, and unload inside a frontend process, or protect saved data, and are candidates for upstream contribution. The others serve this project: a frontend-selected SRAM save location and the single-library build.
 
 | Change | Files |
 | --- | --- |
@@ -30,6 +30,8 @@ The first four changes make the emulator safe to load, restart, and unload insid
 | The VU1 thread is closed by the code that opened it instead of by a static destructor | `pcsx2/x86/microVU.cpp`, `pcsx2/VMManager.cpp` |
 | A failed CPU-thread initialization releases what it acquired | `pcsx2/VMManager.cpp`, `pcsx2/VMManager.h` |
 | A failed startup clears arcade identity, clocks, and media the same way shutdown does; the arcade image handle is cleared on close and never overwritten | `pcsx2/VMManager.cpp`, `pcsx2/DEV9/ACATA_IO.cpp` |
+| Arcade SRAM is read without write access, limited to 32 KiB and closed on every path; only an image reported as absent starts blank, any other open or read failure keeps write protection for the session, an existing image is never recreated on save, a new image is written to a temporary file and renamed into place, and the SRAM path is reset at the start of each session | `pcsx2/DEV9/ACSRAM.cpp`, `pcsx2/VMManager.cpp` |
+| An optional boot parameter keeps arcade SRAM in `<directory>/<gameid>/sram.bin`, seeded from the manifest's image when no save exists; startup rejects a save location that is the source location. File identity comparison is shared through `FileSystem::IsSamePath` | `pcsx2/VMManager.h`, `pcsx2/VMManager.cpp`, `pcsx2/DEV9/ACSRAM.h`, `pcsx2/DEV9/ACSRAM.cpp`, `common/FileSystem.h`, `common/FileSystem.cpp` |
 | The Windows-only `Optimus.cpp` export is removed because it only takes effect in an executable | `pcsx2/windows/Optimus.cpp`, `pcsx2/CMakeLists.txt` |
 | shaderc is linked statically and its compiler is owned by the Vulkan shader cache instead of a runtime-loaded library released at process exit | `pcsx2/GS/Renderers/Vulkan/VKShaderCache.cpp`, `cmake/FindShaderc.cmake`, `pcsx2/CMakeLists.txt` |
 

@@ -114,7 +114,9 @@ namespace VMManager
 	static void LogUnsafeSettingsToConsole(const std::string& messages);
 	static void WarnAboutUnsafeSettings();
 
-	static bool AutoDetectSource(const std::string& filename, Error* error = nullptr);
+	static bool AutoDetectSource(const VMBootParameters& boot_params, Error* error = nullptr);
+	static bool SetArcadeSramPaths(const std::string& save_directory, const std::string& gameid,
+		const std::string& manifest_image, Error* error);
 	static void ClearArcadeIdentity();
 	static void CloseArcadeMedia();
 	static void UpdateDiscDetails(bool booting);
@@ -1322,8 +1324,44 @@ bool VMManager::HasBootedELF()
 	return s_current_crc != 0 && s_elf_executed;
 }
 
-bool VMManager::AutoDetectSource(const std::string& filename, Error* error)
+bool VMManager::SetArcadeSramPaths(const std::string& save_directory, const std::string& gameid,
+	const std::string& manifest_image, Error* error)
 {
+	if (save_directory.empty())
+	{
+		ACSRAM::filepath = manifest_image;
+		return true;
+	}
+
+	// The validated gameid is a plain directory name, so the save stays below save_directory.
+	const std::string game_directory = Path::Combine(save_directory, gameid);
+	Error directory_error;
+	if (!FileSystem::EnsureDirectoryExists(game_directory.c_str(), true, &directory_error))
+	{
+		Error::SetStringFmt(error, "Cannot create the SRAM save directory '{}': {}", game_directory,
+			directory_error.GetDescription());
+		return false;
+	}
+
+	// Saving must never write into the content directory, even when a link, a different case or
+	// relative components make the two paths look different.
+	const std::string save_image = Path::Combine(game_directory, "sram.bin");
+	if (FileSystem::IsSamePath(game_directory.c_str(), std::string(Path::GetDirectory(manifest_image)).c_str()) ||
+		FileSystem::IsSamePath(save_image.c_str(), manifest_image.c_str()))
+	{
+		Error::SetStringFmt(error, "The SRAM save '{}' and the game's initial SRAM '{}' share a location; "
+			"use a save directory outside the game content.", save_image, manifest_image);
+		return false;
+	}
+
+	ACSRAM::filepath = save_image;
+	ACSRAM::initial_filepath = manifest_image;
+	return true;
+}
+
+bool VMManager::AutoDetectSource(const VMBootParameters& boot_params, Error* error)
+{
+	const std::string& filename = boot_params.filename;
 	if (!filename.empty())
 	{
 		if (!FileSystem::FileExists(filename.c_str()))
@@ -1459,7 +1497,9 @@ bool VMManager::AutoDetectSource(const std::string& filename, Error* error)
 				//FileMcd_Reopen(s_serial);
 				s_elf_override = Path::Combine(basedir, INI.GetStringValue("data", "elf", "boot.elf"));
 				EmuConfig.CurrentGameArgs = INI.GetStringValue("data", "args");
-				ACSRAM::filepath = Path::Combine(basedir, INI.GetStringValue("data", "sram", "sram.bin"));
+				if (!SetArcadeSramPaths(boot_params.arcade_save_directory, s_serial,
+						Path::Combine(basedir, INI.GetStringValue("data", "sram", "sram.bin")), error))
+					return false;
 				// JVS device mode: an explicit jvsmode= in the .acgame overrides (force/legacy); otherwise it is
 				// derived from the gameid alone (ACJV::ResolveModeFromGameId), so a .acgame needs only its gameid.
 				std::string jvsmode = INI.GetStringValue("data", "jvsmode", "");
@@ -1497,6 +1537,8 @@ bool VMManager::AutoDetectSource(const std::string& filename, Error* error)
 				}
 				Console.WriteLnFmt(Color_Green, "ACGAME: elf:'{}'", s_elf_override);
 				Console.WriteLnFmt(Color_Green, "ACGAME: sram:'{}'", ACSRAM::filepath);
+				if (!ACSRAM::initial_filepath.empty())
+					Console.WriteLnFmt(Color_Green, "ACGAME: initial sram:'{}'", ACSRAM::initial_filepath);
 				Console.WriteLnFmt(Color_Green, "ACGAME: media:'{}'", ACATA::imgpath);
 
 				return true;
@@ -1664,6 +1706,10 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 
 	ScopedGuard unlock_cdvd = &cdvdUnlock;
 
+	// Only an arcade manifest sets the SRAM images, so no session inherits the previous ones.
+	ACSRAM::filepath.clear();
+	ACSRAM::initial_filepath.clear();
+
 	// resolve source type
 	if (boot_params.source_type.has_value())
 	{
@@ -1682,7 +1728,7 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	else
 	{
 		// Automatic type detection of boot parameter based on filename.
-		if (!AutoDetectSource(boot_params.filename, error))
+		if (!AutoDetectSource(boot_params, error))
 			return VMBootResult::StartupFailure;
 	}
 

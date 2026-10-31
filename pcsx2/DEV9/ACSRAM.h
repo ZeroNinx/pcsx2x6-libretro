@@ -23,7 +23,11 @@ namespace ACSRAM
 
     // data
     extern u8 buffer[];
+    // SRAM image read and saved by the session.
     extern std::string filepath;
+    // Initial data imported when `filepath` does not exist yet; empty when the session
+    // reads and saves the manifest's image itself.
+    extern std::string initial_filepath;
 
     //storage
     int ReadFile();

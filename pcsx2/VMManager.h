@@ -36,6 +36,9 @@ struct VMBootParameters
 	std::optional<s32> state_index;
 	std::optional<CDVD_SourceType> source_type;
 	std::optional<ArcadeBootParams> arcade;
+	/// When set, an arcade game keeps its SRAM in <directory>/<gameid>/sram.bin and the
+	/// manifest's SRAM image only provides initial data for a missing save.
+	std::string arcade_save_directory;
 
 	std::optional<bool> fast_boot;
 	std::optional<bool> fullscreen;

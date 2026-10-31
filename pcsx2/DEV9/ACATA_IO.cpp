@@ -188,6 +188,9 @@ int ACATA::TH::IO_OpenImage() {
 			ACATA::TH::IMAGESIZE = (CHD.GetSectorCount() * sectorsize);
 		} else {
 			isCHD = false;
+			open_error = FileSystem::FileExists(ACATA::imgpath.c_str()) ?
+				fmt::format("Cannot open the CHD image '{}'; it may be damaged.", ACATA::imgpath) :
+				fmt::format("The media image '{}' does not exist.", ACATA::imgpath);
 			return EIO;
 		}
 		Console.WriteLn("%s: CHD image opened ok", __FUNCTION__);
@@ -198,14 +201,17 @@ int ACATA::TH::IO_OpenImage() {
 			ACATA::TH::IMAGE = std::fopen(ACATA::imgpath.c_str(), "rb");
 
 		if (!ACATA::TH::IMAGE) {
-			Console.ErrorFmt("{}> fail to fopen '{}' w/ error {} '{}'", __FUNCTION__, ACATA::imgpath, errno, strerror(errno));
-			return errno;
+			const int open_errno = errno;
+			Console.ErrorFmt("{}> fail to fopen '{}' w/ error {} '{}'", __FUNCTION__, ACATA::imgpath, open_errno, strerror(open_errno));
+			open_error = fmt::format("Cannot open the media image '{}': {}", ACATA::imgpath, strerror(open_errno));
+			return open_errno;
 		}
 		s64 t;
 		if ((t = FileSystem::GetPathFileSize(ACATA::imgpath.c_str())) > 0)
 			ACATA::TH::IMAGESIZE = t;
 		else {
 			Console.ErrorFmt("{}> fail to get filesize: {}", __FUNCTION__, t);
+			open_error = fmt::format("The media image '{}' is empty or its size cannot be read.", ACATA::imgpath);
 			std::fclose(ACATA::TH::IMAGE);
 			ACATA::TH::IMAGE = nullptr;
 			return EINVAL;

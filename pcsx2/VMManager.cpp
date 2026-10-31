@@ -1477,7 +1477,7 @@ bool VMManager::AutoDetectSource(const VMBootParameters& boot_params, Error* err
 				if ((card = INI.GetStringValue("data", "dongle", fmt::format("{}.ps2", s_serial).c_str())) != "") {
 					std::string src = Path::Combine(EmuFolders::MemoryCards, card);
 					if (!FileSystem::FileExists(src.c_str())) {
-						Error::SetStringFmt(error, "requested dongle image does not exist! '{}'", card);
+						Error::SetStringFmt(error, "requested dongle image does not exist! '{}'", src);
 						Console.ErrorFmt("ACGAME: cannot open a dongle file at location '{}'", src);
 						return false;
 					}
@@ -1487,7 +1487,7 @@ bool VMManager::AutoDetectSource(const VMBootParameters& boot_params, Error* err
 				if ((card = INI.GetStringValue("data", "card", "")) != "") {
 					std::string src = Path::Combine(EmuFolders::MemoryCards, card);
 					if (!FileSystem::FileExists(src.c_str())) {
-						Error::SetStringFmt(error, "requested memcard image does not exist! '{}'", card);
+						Error::SetStringFmt(error, "requested memcard image does not exist! '{}'", src);
 						Console.ErrorFmt("ACGAME: cannot open a card file at location '{}'", src);
 						return false;
 					}

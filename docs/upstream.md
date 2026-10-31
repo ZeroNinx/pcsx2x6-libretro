@@ -22,7 +22,7 @@ The Windows source dependency `3rdparty/winpixeventruntime/` includes upstream-v
 
 ## Emulation changes
 
-The first seven changes make the emulator safe to load, restart, and unload inside a frontend process, or protect saved data, and are candidates for upstream contribution. The others serve this project: a frontend-selected SRAM save location and the single-library build.
+The first eight changes make the emulator safe to load, restart, and unload inside a frontend process, protect saved data, or make startup failures actionable, and are candidates for upstream contribution. The others serve this project: a frontend-selected SRAM save location and the single-library build.
 
 | Change | Files |
 | --- | --- |
@@ -33,6 +33,7 @@ The first seven changes make the emulator safe to load, restart, and unload insi
 | Arcade SRAM is read without write access, limited to 32 KiB and closed on every path; only an image reported as absent starts blank, any other open or read failure keeps write protection for the session, an existing image is never recreated on save, a new image is written to a temporary file and renamed into place, and the SRAM path is reset at the start of each session | `pcsx2/DEV9/ACSRAM.cpp`, `pcsx2/VMManager.cpp` |
 | The patch archive is opened for each lookup and closed when the lookup ends instead of being cached until process exit; source creation failures are reported as open failures, and archive entries are closed after reading | `pcsx2/Patch.cpp`, `common/ZipHelpers.h` |
 | Opening arcade media sets the sector size from the session's declared media instead of keeping the previous session's value; the CHD sector size check compares against that declaration and is skipped with a warning for an unknown media type | `pcsx2/DEV9/ACATA_IO.cpp` |
+| Arcade startup failures name the file involved: a missing or unreadable media image, a missing dongle or save card, with the full path of the expected file | `pcsx2/DEV9/ACATA_IO.cpp`, `pcsx2/VMManager.cpp` |
 | An optional boot parameter keeps arcade SRAM in `<directory>/<gameid>/sram.bin`, seeded from the manifest's image when no save exists; startup rejects a save location that is the source location. File identity comparison is shared through `FileSystem::IsSamePath` | `pcsx2/VMManager.h`, `pcsx2/VMManager.cpp`, `pcsx2/DEV9/ACSRAM.h`, `pcsx2/DEV9/ACSRAM.cpp`, `common/FileSystem.h`, `common/FileSystem.cpp` |
 | The Windows-only `Optimus.cpp` export is removed because it only takes effect in an executable | `pcsx2/windows/Optimus.cpp`, `pcsx2/CMakeLists.txt` |
 | shaderc is linked statically and its compiler is owned by the Vulkan shader cache instead of a runtime-loaded library released at process exit | `pcsx2/GS/Renderers/Vulkan/VKShaderCache.cpp`, `cmake/FindShaderc.cmake`, `pcsx2/CMakeLists.txt` |

@@ -438,8 +438,13 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 		return false;
 	}
 
-	if (!FileSystem::EnsureDirectoryExists(save_directory.c_str(), true, error))
+	Error directory_error;
+	if (!FileSystem::EnsureDirectoryExists(save_directory.c_str(), true, &directory_error))
+	{
+		Error::SetStringFmt(error, "Cannot create the save directory '{}': {}", save_directory,
+			directory_error.GetDescription());
 		return false;
+	}
 
 	LoadCoreSettings(bios_name);
 	if (!FileSystem::DirectoryExists(EmuFolders::Bios.c_str()) ||

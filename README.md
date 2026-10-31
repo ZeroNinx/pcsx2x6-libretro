@@ -4,7 +4,7 @@ A libretro core project for PCSX2x6's NAMCO System 246 and System 256 arcade emu
 
 ## Status
 
-The M1 libretro Host integration is in development. The core builds and loads in a frontend, but it cannot start content yet.
+The M1 libretro Host integration is in development. The core can initialize, run, and shut down an arcade VM using Vulkan. Video output remains a black placeholder; audio output and input are not connected yet.
 
 See the [development roadmap](docs/roadmap.md), [M1 integration plan](docs/M1.md), and [upstream sources](docs/upstream.md).
 

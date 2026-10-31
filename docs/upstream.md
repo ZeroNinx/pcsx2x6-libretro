@@ -22,14 +22,16 @@ The Windows source dependency `3rdparty/winpixeventruntime/` includes upstream-v
 
 ## Emulation changes
 
-The first three changes make the emulator safe to load and unload repeatedly inside a frontend process and are candidates for upstream contribution. The last one applies only to a library build.
+The first four changes make the emulator safe to load, restart, and unload inside a frontend process and are candidates for upstream contribution. The last two apply to this project's single-library build.
 
 | Change | Files |
 | --- | --- |
 | The page-fault handler can be removed; fastmem allocation installs it and fastmem release removes it | `common/HostSys.h`, `common/Windows/WinHostSys.cpp`, `common/Linux/LnxHostSys.cpp`, `common/Darwin/DarwinMisc.cpp`, `pcsx2/vtlb.cpp` |
 | The VU1 thread is closed by the code that opened it instead of by a static destructor | `pcsx2/x86/microVU.cpp`, `pcsx2/VMManager.cpp` |
 | A failed CPU-thread initialization releases what it acquired | `pcsx2/VMManager.cpp`, `pcsx2/VMManager.h` |
+| A failed startup clears arcade identity, clocks, and media the same way shutdown does; the arcade image handle is cleared on close and never overwritten | `pcsx2/VMManager.cpp`, `pcsx2/DEV9/ACATA_IO.cpp` |
 | The Windows-only `Optimus.cpp` export is removed because it only takes effect in an executable | `pcsx2/windows/Optimus.cpp`, `pcsx2/CMakeLists.txt` |
+| shaderc is linked statically and its compiler is owned by the Vulkan shader cache instead of a runtime-loaded library released at process exit | `pcsx2/GS/Renderers/Vulkan/VKShaderCache.cpp`, `cmake/FindShaderc.cmake`, `pcsx2/CMakeLists.txt` |
 
 ## Version identity
 

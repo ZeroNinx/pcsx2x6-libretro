@@ -659,8 +659,7 @@ if(USE_VULKAN)
 		GS/Renderers/Vulkan/VKStreamBuffer.h
 		GS/Renderers/Vulkan/VKSwapChain.h
 	)
-	target_link_libraries(PCSX2_FLAGS INTERFACE vulkan-headers)
-	target_include_directories(PCSX2_FLAGS INTERFACE ${SHADERC_INCLUDE_DIR})
+	target_link_libraries(PCSX2_FLAGS INTERFACE vulkan-headers Shaderc::shaderc_combined)
 endif()
 
 set(pcsx2GSMetalShaders

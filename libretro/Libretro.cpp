@@ -28,6 +28,7 @@ namespace
 
 	retro_environment_t s_environment = nullptr;
 	retro_video_refresh_t s_video_refresh = nullptr;
+	bool s_initialized = false;
 
 	// Presented until the core delivers emulated frames; it does not show VM output.
 	std::array<u32, NATIVE_WIDTH * NATIVE_HEIGHT> s_placeholder_frame = {};
@@ -35,6 +36,13 @@ namespace
 
 void retro_set_environment(retro_environment_t cb)
 {
+	// Frontends probe core information by calling this on the module again, which reaches
+	// an already initialized core with an environment that only serves the probe.
+	// RetroArch does this during a session. The core keeps the environment it was
+	// initialized with until deinit.
+	if (s_initialized)
+		return;
+
 	s_environment = cb;
 	LibretroHost::SetEnvironment(cb);
 }
@@ -89,6 +97,7 @@ void retro_get_system_av_info(retro_system_av_info* info)
 
 void retro_init(void)
 {
+	s_initialized = true;
 	LibretroHost::InitializeLogging();
 	Console.WriteLnFmt("Core initialized: {}", CORE_VERSION);
 	LibretroHost::DrainLogMessages();
@@ -100,6 +109,7 @@ void retro_deinit(void)
 	LibretroHost::ReleaseFonts();
 	Console.WriteLn("Core deinitialized");
 	LibretroHost::ShutdownLogging();
+	s_initialized = false;
 }
 
 bool retro_load_game(const retro_game_info* game)

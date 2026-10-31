@@ -183,6 +183,11 @@ static void RunSession(const std::string& boot_filename)
 	FinishBoot(true, std::string());
 	Console.WriteLn("VM started");
 
+	// Initialize() leaves a successfully started VM paused; anything else breaks the
+	// state handling below.
+	if (VMManager::GetState() != VMState::Paused)
+		Console.ErrorFmt("VM state after initialization is {}, expected Paused", static_cast<int>(VMManager::GetState()));
+
 	VMManager::SetState(VMState::Running);
 	for (bool running = true; running;)
 	{

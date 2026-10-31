@@ -4,6 +4,7 @@
 #include "LibretroSession.h"
 #include "LibretroHost.h"
 
+#include "MTGS.h"
 #include "VMManager.h"
 
 #include "common/Console.h"
@@ -27,6 +28,8 @@ namespace
 	// code in this library and must finish before the library can be unloaded.
 	constexpr auto WAIT_INTERVAL = std::chrono::milliseconds(100);
 	constexpr auto WATCHDOG_INTERVAL = std::chrono::seconds(10);
+	// About ten seconds of emulated frames.
+	constexpr u32 CAPTURE_FAILURE_REPORT_FRAMES = 600;
 
 	enum class SessionState
 	{
@@ -65,6 +68,14 @@ namespace
 	bool s_stop_requested = false;
 	bool s_run_token = false;
 	u64 s_frame_count = 0;
+
+	// Frames rotate through three buffers: the CPU thread captures into s_capture_frame,
+	// the session lock guards s_published_frame, and the frontend presents its own buffer.
+	// Exchanging them keeps the CPU thread from writing pixels that are being presented.
+	std::vector<u32> s_capture_frame;
+	std::vector<u32> s_published_frame;
+	bool s_frame_published = false;
+	u32 s_capture_failures = 0;
 
 	// The thread that calls the libretro entry points; only it may forward logs.
 	std::thread::id s_frontend_thread_id;
@@ -146,6 +157,38 @@ static void WaitWhilePaused()
 	VMManager::SetState(VMState::Stopping);
 }
 
+// No frame of a session may reach the frontend after that session. Requires s_mutex.
+static void ClearPublishedFrame()
+{
+	s_published_frame.clear();
+	s_frame_published = false;
+	s_capture_failures = 0;
+}
+
+// Reads back the frame whose vsync the CPU thread has just queued, so the GS has merged it
+// by the time it runs the readback. Runs without the session lock while the GS thread works.
+static bool CaptureFrame()
+{
+	using LibretroSession::FRAME_HEIGHT;
+	using LibretroSession::FRAME_WIDTH;
+
+	u32 width, height;
+	if (!MTGS::SaveMemorySnapshot(FRAME_WIDTH, FRAME_HEIGHT, true, false, &width, &height, &s_capture_frame))
+		return false;
+
+	if (width != FRAME_WIDTH || height != FRAME_HEIGHT)
+	{
+		Console.ErrorFmt("Frame readback returned {}x{} instead of {}x{}", width, height, FRAME_WIDTH, FRAME_HEIGHT);
+		return false;
+	}
+
+	// The readback holds R, G, B, A bytes; XRGB8888 is B, G, R, X in little-endian memory.
+	for (u32& pixel : s_capture_frame)
+		pixel = (pixel & 0xFF00FF00u) | ((pixel >> 16) & 0xFFu) | ((pixel & 0xFFu) << 16);
+
+	return true;
+}
+
 static void RunSession(const VMBootParameters& boot_params)
 {
 	VMManager::ApplySettings();
@@ -176,6 +219,7 @@ static void RunSession(const VMBootParameters& boot_params)
 		std::unique_lock lock(s_mutex);
 		s_frame_count = 0;
 		s_run_token = false;
+		ClearPublishedFrame();
 	}
 	FinishBoot(true, std::string());
 	Console.WriteLn("VM started");
@@ -220,6 +264,7 @@ static void RunSession(const VMBootParameters& boot_params)
 	s_session_state = SessionState::None;
 	s_stop_requested = false;
 	s_run_token = false;
+	ClearPublishedFrame();
 	s_cv.notify_all();
 }
 
@@ -361,6 +406,17 @@ void LibretroSession::RunFrame()
 		[next_frame]() { return s_frame_count >= next_frame || s_session_state != SessionState::Active; });
 }
 
+bool LibretroSession::TakeFrame(std::vector<u32>* pixels)
+{
+	std::unique_lock lock(s_mutex);
+	if (!s_frame_published)
+		return false;
+
+	s_published_frame.swap(*pixels);
+	s_frame_published = false;
+	return true;
+}
+
 void LibretroSession::Stop()
 {
 	std::unique_lock lock(s_mutex);
@@ -387,6 +443,10 @@ void LibretroSession::Shutdown()
 	WaitWithDiagnostics(lock, "CPU thread shutdown", []() { return s_worker_state == WorkerState::Exited; });
 	JoinCPUThread(lock);
 	s_exit_requested = false;
+
+	// The CPU thread has ended, so nothing captures into these buffers any more.
+	std::vector<u32>().swap(s_capture_frame);
+	std::vector<u32>().swap(s_published_frame);
 }
 
 bool LibretroSession::IsActive()
@@ -440,7 +500,26 @@ void LibretroSession::RequestStop()
 
 void LibretroSession::PumpCPUThread()
 {
+	const bool captured = CaptureFrame();
+
 	std::unique_lock lock(s_mutex);
+	if (captured)
+	{
+		if (s_capture_failures >= CAPTURE_FAILURE_REPORT_FRAMES)
+			Console.WriteLnFmt("Frame readback recovered after {} frames without an image", s_capture_failures);
+
+		s_capture_failures = 0;
+		s_published_frame.swap(s_capture_frame);
+		s_frame_published = true;
+	}
+	else if (++s_capture_failures % CAPTURE_FAILURE_REPORT_FRAMES == 0)
+	{
+		// Frames without an image are expected while the GS has nothing to show yet; a long
+		// run of them means the frontend keeps presenting an old or black frame.
+		Console.WarningFmt("No frame could be read back for {} frames", s_capture_failures);
+	}
+
+	// The frame is published before the frontend learns that the vsync completed.
 	s_frame_count++;
 	s_cv.notify_all();
 

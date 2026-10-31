@@ -16,6 +16,7 @@
 #include <array>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -23,8 +24,8 @@ namespace
 	constexpr const char* CORE_VERSION = GIT_REV " (PCSX2x6 " PCSX2X6_BASE_REVISION ")";
 	constexpr const char* CONTENT_EXTENSIONS = "acgame";
 
-	constexpr unsigned NATIVE_WIDTH = 640;
-	constexpr unsigned NATIVE_HEIGHT = 448;
+	constexpr unsigned FRAME_WIDTH = LibretroSession::FRAME_WIDTH;
+	constexpr unsigned FRAME_HEIGHT = LibretroSession::FRAME_HEIGHT;
 	constexpr double NOMINAL_FPS = 59.94;
 	constexpr double SAMPLE_RATE = 48000.0;
 
@@ -32,8 +33,10 @@ namespace
 	retro_video_refresh_t s_video_refresh = nullptr;
 	bool s_initialized = false;
 
-	// Presented until the core delivers emulated frames; it does not show VM output.
-	std::array<u32, NATIVE_WIDTH * NATIVE_HEIGHT> s_placeholder_frame = {};
+	// The last frame of the current session, or empty before its first frame.
+	std::vector<u32> s_presented_frame;
+	// Presented while the session has not delivered a frame yet.
+	std::array<u32, FRAME_WIDTH * FRAME_HEIGHT> s_black_frame = {};
 } // namespace
 
 void retro_set_environment(retro_environment_t cb)
@@ -88,10 +91,10 @@ void retro_get_system_info(retro_system_info* info)
 void retro_get_system_av_info(retro_system_av_info* info)
 {
 	std::memset(info, 0, sizeof(*info));
-	info->geometry.base_width = NATIVE_WIDTH;
-	info->geometry.base_height = NATIVE_HEIGHT;
-	info->geometry.max_width = NATIVE_WIDTH;
-	info->geometry.max_height = NATIVE_HEIGHT;
+	info->geometry.base_width = FRAME_WIDTH;
+	info->geometry.base_height = FRAME_HEIGHT;
+	info->geometry.max_width = FRAME_WIDTH;
+	info->geometry.max_height = FRAME_HEIGHT;
 	info->geometry.aspect_ratio = 4.0f / 3.0f;
 	info->timing.fps = NOMINAL_FPS;
 	info->timing.sample_rate = SAMPLE_RATE;
@@ -108,6 +111,8 @@ void retro_init(void)
 void retro_deinit(void)
 {
 	LibretroSession::Shutdown();
+	// Assigning an empty vector keeps its capacity; exchanging releases the frame memory.
+	std::vector<u32>().swap(s_presented_frame);
 	LibretroHost::ReleaseFonts();
 	Console.WriteLn("Core deinitialized");
 	LibretroHost::ShutdownLogging();
@@ -149,6 +154,7 @@ bool retro_load_game_special(unsigned game_type, const retro_game_info* info, si
 void retro_unload_game(void)
 {
 	LibretroSession::Stop();
+	s_presented_frame.clear();
 	LibretroHost::DrainLogMessages();
 }
 
@@ -159,7 +165,11 @@ void retro_reset(void)
 void retro_run(void)
 {
 	LibretroSession::RunFrame();
-	s_video_refresh(s_placeholder_frame.data(), NATIVE_WIDTH, NATIVE_HEIGHT, NATIVE_WIDTH * sizeof(u32));
+
+	// Without a new frame, the previous one of this session is presented again.
+	LibretroSession::TakeFrame(&s_presented_frame);
+	const u32* pixels = s_presented_frame.empty() ? s_black_frame.data() : s_presented_frame.data();
+	s_video_refresh(pixels, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH * sizeof(u32));
 	LibretroHost::DrainLogMessages();
 }
 

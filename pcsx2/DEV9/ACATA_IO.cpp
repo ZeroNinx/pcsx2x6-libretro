@@ -147,6 +147,12 @@ static bool DetectDiscImageLayout() {
 }
 
 int ACATA::TH::IO_OpenImage() {
+	// Every session closes its image, so one still open here would be overwritten and leaked.
+	if (isCHD || ACATA::TH::IMAGE) {
+		Console.Error("ACATA: an image from a previous session is still open, closing it");
+		IO_CloseImage();
+	}
+
 	open_error.clear();
 	isCHD = ChdImage::IsChdFileName(ACATA::imgpath);
 	unitbytes = 0;
@@ -158,7 +164,10 @@ int ACATA::TH::IO_OpenImage() {
 				Console.ErrorFmt("ACATA: CHD sectorsize mismatches declaration {} vs {}", secsize, sectorsize);
 			sectorsize = secsize;
 			ACATA::TH::IMAGESIZE = (CHD.GetSectorCount() * sectorsize);
-		} else return EIO;
+		} else {
+			isCHD = false;
+			return EIO;
+		}
 		Console.WriteLn("%s: CHD image opened ok", __FUNCTION__);
 	} else {
     	ACATA::TH::IMAGE = std::fopen(ACATA::imgpath.c_str(), "r+b");
@@ -175,6 +184,8 @@ int ACATA::TH::IO_OpenImage() {
 			ACATA::TH::IMAGESIZE = t;
 		else {
 			Console.ErrorFmt("{}> fail to get filesize: {}", __FUNCTION__, t);
+			std::fclose(ACATA::TH::IMAGE);
+			ACATA::TH::IMAGE = nullptr;
 			return EINVAL;
 		}
 		if ((ACATA::MediaType == ACMEDIATYPE::ACCD || ACATA::MediaType == ACMEDIATYPE::ACDVD) && !DetectDiscImageLayout()) {
@@ -195,7 +206,9 @@ int ACATA::TH::IO_CloseImage() {
 		return 0;
 	} else if (ACATA::TH::IMAGE) {
 		Console.WriteLn("%s", __FUNCTION__);
-		return std::fclose(ACATA::TH::IMAGE);
+		const int result = std::fclose(ACATA::TH::IMAGE);
+		ACATA::TH::IMAGE = nullptr;
+		return result;
 	}
 	return EINVAL;
 }

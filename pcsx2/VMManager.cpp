@@ -115,6 +115,8 @@ namespace VMManager
 	static void WarnAboutUnsafeSettings();
 
 	static bool AutoDetectSource(const std::string& filename, Error* error = nullptr);
+	static void ClearArcadeIdentity();
+	static void CloseArcadeMedia();
 	static void UpdateDiscDetails(bool booting);
 	static void ClearDiscDetails();
 	static void HandleELFChange(bool verbose_patches_if_changed);
@@ -1516,6 +1518,26 @@ bool VMManager::AutoDetectSource(const std::string& filename, Error* error)
 	}
 }
 
+void VMManager::ClearArcadeIdentity()
+{
+	s_acgame = {};
+	s_acgame_serial = {};
+	s_arcade_gameid = {};
+	s_acgame_sys256 = false;
+	ArcadeiLinkID = {};
+	PS2CLK = PS2CLK_DEFAULT;
+	PSXCLK = 36864000;
+	s_sys256_mode = false;
+}
+
+void VMManager::CloseArcadeMedia()
+{
+	ACATA::TH::IO_CloseImage();
+
+	// drop the previous game's cached ATAPI mode page so a game switch gets a fresh MODE_SENSE
+	ACATAPI::Reset();
+}
+
 void VMManager::PrecacheCDVDFile()
 {
 	Error error;
@@ -1591,6 +1613,11 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 	ScopedGuard close_state = [] {
 		if (GSDumpReplayer::IsReplayingDump())
 			GSDumpReplayer::Shutdown();
+
+		// AutoDetectSource() sets up an arcade boot before anything that can fail
+		// later, so a failed startup undoes it the same way Shutdown() does.
+		CloseArcadeMedia();
+		ClearArcadeIdentity();
 
 		s_elf_override = {};
 		ClearELFInfo();
@@ -1918,12 +1945,7 @@ void VMManager::Shutdown(bool save_resume_state)
 
 	SaveSessionTime(s_disc_serial);
 	s_elf_override = {};
-	s_acgame = {};
-	s_acgame_serial = {};
-	ArcadeiLinkID = {};
-	PS2CLK = PS2CLK_DEFAULT;
-	PSXCLK = 36864000;
-	s_sys256_mode = false;
+	ClearArcadeIdentity();
 	ClearELFInfo();
 	CDVDsys_ClearFiles();
 
@@ -1956,10 +1978,7 @@ void VMManager::Shutdown(bool save_resume_state)
 	DoCDVDclose();
 	FWclose();
 	FileMcd_EmuClose();
-	ACATA::TH::IO_CloseImage();
-
-	// drop the previous game's cached ATAPI mode page so a game switch gets a fresh MODE_SENSE
-	ACATAPI::Reset();
+	CloseArcadeMedia();
 
 	// If the fullscreen UI is running, do a hardware reset on the GS
 	// so that the texture cache and targets are all cleared.

@@ -1,6 +1,6 @@
 # Development Roadmap
 
-Planning snapshot: 2026-10-30. This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 contains the initial implementation breakdown; later milestones will be expanded when entered.
+This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 is complete; M2 is the next milestone, with detailed implementation steps to be defined before work begins.
 
 ## Objective and initial scope
 

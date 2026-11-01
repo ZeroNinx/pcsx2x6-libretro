@@ -17,10 +17,6 @@ struct VMBootParameters;
 /// requests and wait for their acknowledgement; VM state changes happen on the CPU thread.
 namespace LibretroSession
 {
-	/// Size of the XRGB8888 frames the session publishes.
-	constexpr u32 FRAME_WIDTH = 640;
-	constexpr u32 FRAME_HEIGHT = 480;
-
 	/// Largest frame the session accepts and the frontend is told to expect: the 1080i
 	/// display mode, the largest GS video mode, at the fixed upscale multiplier of 1.
 	constexpr u32 MAX_FRAME_WIDTH = 1920;
@@ -36,8 +32,8 @@ namespace LibretroSession
 		std::array<u16, INPUT_PORTS> joypad_buttons = {};
 	};
 
-	/// A completed frame and the data the frontend needs to present it, all read on the
-	/// CPU thread when the frame completed.
+	/// The image of a completed frame: the GS composite output at its own size, in XRGB8888,
+	/// with the display aspect ratio the GS presents it at.
 	struct Frame
 	{
 		/// Number of the frame request this frame completed, counted from 1 per session.
@@ -48,8 +44,6 @@ namespace LibretroSession
 		/// Bytes per row.
 		u32 pitch = 0;
 		float aspect_ratio = 0.0f;
-		/// Emulated vsync frequency in Hz.
-		double vertical_frequency = 0.0;
 	};
 
 	/// Creates the CPU thread if needed and boots the VM. Returns after the boot either
@@ -63,6 +57,10 @@ namespace LibretroSession
 	/// Exchanges the frame published since the previous call with `frame`. Returns false,
 	/// leaving `frame` untouched, when no new frame was published.
 	bool TakeFrame(Frame* frame);
+
+	/// Emulated vsync frequency in Hz when the latest frame completed, image or not; 0 while
+	/// the session has not completed a frame in an initialized video mode.
+	double GetVsyncFrequency();
 
 	/// Stops the active VM, if any, and waits until it has shut down.
 	void Stop();

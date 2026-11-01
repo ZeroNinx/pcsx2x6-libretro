@@ -5,6 +5,7 @@
 #include "LibretroHost.h"
 
 #include "GS.h"
+#include "GS/GS.h"
 #include "MTGS.h"
 #include "VMManager.h"
 
@@ -31,8 +32,6 @@ namespace
 	constexpr auto WATCHDOG_INTERVAL = std::chrono::seconds(10);
 	// About ten seconds of emulated frames.
 	constexpr u32 CAPTURE_FAILURE_REPORT_FRAMES = 600;
-	// The capture fills a 4:3 canvas.
-	constexpr float FRAME_ASPECT_RATIO = 4.0f / 3.0f;
 
 	enum class FrameRequestWait
 	{
@@ -93,6 +92,8 @@ namespace
 	LibretroSession::Frame s_published_frame;
 	bool s_frame_published = false;
 	u32 s_capture_failures = 0;
+	// Published at every completion, so timing is known before the first image exists.
+	double s_vsync_frequency = 0.0;
 
 	// The thread that calls the libretro entry points; only it may forward logs.
 	std::thread::id s_frontend_thread_id;
@@ -184,6 +185,7 @@ static void ResetFrameState()
 	s_published_frame.pixels.clear();
 	s_frame_published = false;
 	s_capture_failures = 0;
+	s_vsync_frequency = 0.0;
 }
 
 // Parks the CPU thread at a frame boundary until the frontend requests a frame, serving
@@ -221,17 +223,26 @@ static bool CaptureFrame()
 {
 	using namespace LibretroSession;
 
-	u32 width, height;
+	// Without a target size or aspect correction, the snapshot is the composite texture as
+	// the GS produced it; the aspect ratio is read in the same GS job so both describe it.
+	u32 width = 0, height = 0;
+	float aspect_ratio = 0.0f;
+	bool read = false;
 	std::vector<u32>& pixels = s_capture_frame.pixels;
-	if (!MTGS::SaveMemorySnapshot(FRAME_WIDTH, FRAME_HEIGHT, true, false, &width, &height, &pixels))
+	MTGS::RunOnGSThread([&width, &height, &aspect_ratio, &read, &pixels]() {
+		read = GSSaveSnapshotToMemory(0, 0, false, false, &width, &height, &pixels);
+		aspect_ratio = GSGetDisplayAspectRatio();
+	});
+	MTGS::WaitGS(false, false, false);
+	if (!read)
 		return false;
 
 	// The frontend relies on these sizes, so a frame outside them is never published.
 	if (width == 0 || height == 0 || width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT ||
-		pixels.size() != static_cast<size_t>(width) * height)
+		pixels.size() != static_cast<size_t>(width) * height || !(aspect_ratio > 0.0f))
 	{
-		Console.ErrorFmt("Frame readback returned {}x{} with {} pixels; the frame is dropped", width, height,
-			pixels.size());
+		Console.ErrorFmt("Frame readback returned {}x{} with {} pixels at aspect ratio {}; the frame is dropped",
+			width, height, pixels.size(), aspect_ratio);
 		return false;
 	}
 
@@ -242,8 +253,7 @@ static bool CaptureFrame()
 	s_capture_frame.width = width;
 	s_capture_frame.height = height;
 	s_capture_frame.pitch = width * sizeof(u32);
-	s_capture_frame.aspect_ratio = FRAME_ASPECT_RATIO;
-	s_capture_frame.vertical_frequency = GetVerticalFrequency();
+	s_capture_frame.aspect_ratio = aspect_ratio;
 	return true;
 }
 
@@ -482,6 +492,12 @@ bool LibretroSession::TakeFrame(Frame* frame)
 	return true;
 }
 
+double LibretroSession::GetVsyncFrequency()
+{
+	std::unique_lock lock(s_mutex);
+	return s_vsync_frequency;
+}
+
 void LibretroSession::Stop()
 {
 	std::unique_lock lock(s_mutex);
@@ -566,8 +582,11 @@ void LibretroSession::RequestStop()
 void LibretroSession::PumpCPUThread()
 {
 	const bool captured = CaptureFrame();
+	// Until the BIOS sets a video mode, the emulator only has a placeholder frequency.
+	const double vsync_frequency = (gsVideoMode != GS_VideoMode::Uninitialized) ? GetVerticalFrequency() : 0.0;
 
 	std::unique_lock lock(s_mutex);
+	s_vsync_frequency = vsync_frequency;
 	if (s_requested_frames > s_completed_frames)
 	{
 		s_completed_frames++;

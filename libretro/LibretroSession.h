@@ -56,8 +56,16 @@ namespace LibretroSession
 	bool Start(VMBootParameters boot_params, Error* error);
 
 	/// Requests one frame with the given input: the VM advances to its next vsync and no
-	/// further. Returns once that frame has been completed and published.
-	void RunFrame(const InputSnapshot& input);
+	/// further. Returns once that frame has been completed and published: true when the VM
+	/// advanced, false when there is no active session or a paused VM completed the request
+	/// without running, leaving the input unapplied apart from its device changes.
+	bool RunFrame(const InputSnapshot& input);
+
+	/// Resets the VM of the active session on the CPU thread. Returns true once the reset has
+	/// actually happened, leaving the VM running or paused as before and waiting for the next
+	/// frame request; false when there is no active session or the VM refused, for instance
+	/// while a memory card is being written, in which case the session continues unchanged.
+	bool Reset();
 
 	/// Exchanges the frame published since the previous call with `frame`. Returns false,
 	/// leaving `frame` untouched, when no new frame was published.

@@ -94,7 +94,7 @@ Scope includes frame delivery and geometry, actual VM refresh rate, sample-rate 
 - Basic JVS controls match the standalone mapping; coin input uses press edges, and Service/Test remain distinct controls.
 - Input snapshots are consumed safely by the emulation thread, with callbacks made from the appropriate execution context.
 - Frame stepping, geometry, audio quantity, and buffering remain consistent through normal execution and frontend pause/resume.
-- Reset, close/reopen, and deinit/init complete without stale input, stale game state, leaked workers, or hangs.
+- Reset request handling and cleanup, close/reopen, and deinit/init complete without integration-induced stale state, leaked workers, or hangs. Continued gameplay after arcade VM reset is subject to the deferred upstream limitation described in [M3](M3.md#m35--pause-reset-and-reuse).
 - SRAM and other supported writable state persist across a normal close/reopen without overwriting original reference data.
 
 **Deferred:** speed targets, additional renderers, full peripheral coverage, savestates, rewind, runahead, and netplay. Savestate-based features require their own state-completeness and memory-budget work before being advertised.

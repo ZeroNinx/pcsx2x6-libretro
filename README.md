@@ -6,7 +6,7 @@ A libretro core project for PCSX2x6's NAMCO System 246 and System 256 arcade emu
 
 The core can initialize, run, and shut down an arcade VM using Vulkan and presents video at the GS output dimensions and display aspect ratio. Stereo audio output and two-player RetroPad input for JVS fighting layouts and basic digital drum controls are connected.
 
-See the [development roadmap](docs/roadmap.md), [M1 integration plan](docs/M1.md), and [upstream sources](docs/upstream.md).
+See the [known issues](docs/issues.md), [development roadmap](docs/roadmap.md), [M1 integration plan](docs/M1.md), and [upstream sources](docs/upstream.md).
 
 ## Building
 

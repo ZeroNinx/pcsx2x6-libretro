@@ -44,6 +44,10 @@ namespace LibretroAudio
 	/// rate the frontend has accepted; audio of another rate stays queued within the limit.
 	void Submit(retro_audio_sample_batch_t batch, const Samples& samples, u32 accepted_sample_rate);
 
+	/// Frontend thread: drops the queued audio of a run that ended within the content, such as
+	/// before a reset, counting it as dropped.
+	void DiscardQueued();
+
 	/// Frontend thread: drops queued audio at a content boundary and reports the counts of
 	/// the content that ended.
 	void ResetQueue();

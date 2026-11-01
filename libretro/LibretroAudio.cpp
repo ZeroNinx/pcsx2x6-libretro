@@ -172,6 +172,14 @@ void LibretroAudio::Submit(retro_audio_sample_batch_t batch, const Samples& samp
 		s_overflow_reported = false;
 }
 
+void LibretroAudio::DiscardQueued()
+{
+	s_dropped_frames += s_queue.size() / 2;
+	s_queue.clear();
+	s_overflow_reported = false;
+	s_rate_hold_reported = false;
+}
+
 void LibretroAudio::ResetQueue()
 {
 	if (s_produced_frames > 0 || s_dropped_frames > 0)

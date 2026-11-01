@@ -208,6 +208,16 @@ void retro_unload_game(void)
 
 void retro_reset(void)
 {
+	// A refused reset leaves the session, and what it presents, unchanged.
+	if (LibretroSession::Reset())
+	{
+		// Nothing from before the reset is presented or played afterwards; until the reset VM
+		// completes an image, the frontend sees a black frame.
+		s_presented_frame.pixels.clear();
+		s_frame_audio.data.clear();
+		LibretroAudio::DiscardQueued();
+	}
+	LibretroHost::DrainLogMessages();
 }
 
 // Samples every RetroPad button of each port. The frontend requires one poll per run
@@ -302,18 +312,22 @@ static void AnnounceOutputChanges()
 
 void retro_run(void)
 {
-	LibretroSession::RunFrame(SampleInput());
+	// A paused VM completes the request without running; the frame it presents again has no
+	// audio, and audio still queued from earlier frames waits until the VM runs again.
+	const bool advanced = LibretroSession::RunFrame(SampleInput());
 
 	// Without a new frame, the previous one of this session is presented again.
 	LibretroSession::TakeFrame(&s_presented_frame);
-	LibretroSession::TakeAudio(&s_frame_audio);
+	if (advanced)
+		LibretroSession::TakeAudio(&s_frame_audio);
 	AnnounceOutputChanges();
 	if (s_presented_frame.pixels.empty())
 		s_video_refresh(s_black_frame.data(), INITIAL_WIDTH, INITIAL_HEIGHT, INITIAL_WIDTH * sizeof(u32));
 	else
 		s_video_refresh(s_presented_frame.pixels.data(), s_presented_frame.width, s_presented_frame.height,
 			s_presented_frame.pitch);
-	LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));
+	if (advanced)
+		LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));
 	LibretroHost::DrainLogMessages();
 }
 

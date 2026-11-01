@@ -48,6 +48,15 @@ namespace
 		Active,
 	};
 
+	// Progress of a frontend reset request.
+	enum class ResetRequest
+	{
+		None,
+		Pending,
+		Completed,
+		Refused,
+	};
+
 	enum class WorkerState
 	{
 		None,
@@ -85,6 +94,15 @@ namespace
 	// starts that frame, and only the CPU thread reads s_frame_input.
 	LibretroSession::InputSnapshot s_requested_input;
 	LibretroSession::InputSnapshot s_frame_input;
+	// Device changes of requests a paused VM completed without applying their input; they
+	// reach the input of the next frame the VM runs, so no reconnect goes unseen.
+	std::array<bool, LibretroSession::INPUT_PORTS> s_unapplied_device_changes = {};
+	// Whether the latest completed request advanced the VM to a vsync.
+	bool s_request_advanced = false;
+	// CPU thread only: whether the VM may run to its next vsync. Only a frame request grants
+	// this, so starting, resetting or resuming the VM never runs a frame nobody requested.
+	bool s_frame_granted = false;
+	ResetRequest s_reset_request = ResetRequest::None;
 
 	// Frames rotate through three buffers: the CPU thread captures into s_capture_frame,
 	// the session lock guards s_published_frame, and the frontend presents its own frame.
@@ -163,19 +181,31 @@ static void FinishBoot(bool succeeded, std::string error)
 	s_cv.notify_all();
 }
 
-// While paused, the VM does not reach a vsync, so requests are served here.
+// While paused, the VM does not reach a vsync, so work and stop requests are served here.
+// Frame requests complete without advancing the VM: the frontend presents the last frame
+// again and receives no audio.
 static void WaitWhilePaused()
 {
 	std::unique_lock lock(s_mutex);
-	s_cv.wait(lock, []() { return s_stop_requested || !s_cpu_work.empty(); });
+	s_cv.wait(lock, []() { return s_stop_requested || !s_cpu_work.empty() || s_requested_frames > s_completed_frames; });
 	if (!s_cpu_work.empty())
 	{
 		RunQueuedWork(lock);
 		return;
 	}
 
-	lock.unlock();
-	VMManager::SetState(VMState::Stopping);
+	if (s_stop_requested)
+	{
+		lock.unlock();
+		VMManager::SetState(VMState::Stopping);
+		return;
+	}
+
+	for (u32 port = 0; port < LibretroSession::INPUT_PORTS; port++)
+		s_unapplied_device_changes[port] |= s_requested_input.device_changed[port];
+	s_completed_frames = s_requested_frames;
+	s_request_advanced = false;
+	s_cv.notify_all();
 }
 
 // No frame, request or input of a session may outlive it. Requires s_mutex.
@@ -185,6 +215,8 @@ static void ResetFrameState()
 	s_completed_frames = 0;
 	s_requested_input = {};
 	s_frame_input = {};
+	s_unapplied_device_changes = {};
+	s_request_advanced = false;
 	s_published_frame.pixels.clear();
 	s_frame_published = false;
 	s_capture_failures = 0;
@@ -192,12 +224,14 @@ static void ResetFrameState()
 	s_published_audio.data.clear();
 	s_published_audio.sample_rate = 0;
 	s_published_audio.discarded_frames = 0;
+	s_frame_granted = false;
+	s_reset_request = ResetRequest::None;
 }
 
-// Parks the CPU thread at a frame boundary until the frontend requests a frame, serving
-// queued work meanwhile. The VM is expected to stay in `parked_state`; when queued work
-// changes it, the caller's state handling takes over. Requires s_mutex.
-static FrameRequestWait WaitForFrameRequest(std::unique_lock<std::mutex>& lock, VMState parked_state)
+// Parks the running VM at a frame boundary until the frontend requests a frame, serving
+// queued work meanwhile. When queued work changes the VM state, the caller's state handling
+// takes over. Requires s_mutex.
+static FrameRequestWait WaitForFrameRequest(std::unique_lock<std::mutex>& lock)
 {
 	for (;;)
 	{
@@ -210,17 +244,85 @@ static FrameRequestWait WaitForFrameRequest(std::unique_lock<std::mutex>& lock, 
 		if (s_stop_requested)
 			return FrameRequestWait::Stop;
 
-		if (VMManager::GetState() != parked_state)
+		if (VMManager::GetState() != VMState::Running)
 			return FrameRequestWait::StateChanged;
 
 		if (s_requested_frames > s_completed_frames)
 		{
 			s_frame_input = s_requested_input;
+			for (u32 port = 0; port < LibretroSession::INPUT_PORTS; port++)
+				s_frame_input.device_changed[port] |= std::exchange(s_unapplied_device_changes[port], false);
 			return FrameRequestWait::Advance;
 		}
 
 		s_cv.wait(lock);
 	}
+}
+
+// CPU thread: waits for the next frame request. Returns true when the VM may run to its next
+// vsync, with the request's input applied; a stop request stops the VM instead.
+static bool AwaitFrameGrant()
+{
+	FrameRequestWait wait;
+	{
+		std::unique_lock lock(s_mutex);
+		wait = WaitForFrameRequest(lock);
+	}
+
+	if (wait == FrameRequestWait::Advance)
+	{
+		LibretroInput::Apply(s_frame_input);
+		return true;
+	}
+
+	if (wait == FrameRequestWait::Stop)
+		VMManager::SetState(VMState::Stopping);
+	return false;
+}
+
+// CPU thread, after the VM has actually reset: nothing produced before the reset reaches the
+// frontend afterwards, no control stays held, and the VM waits for a new frame request.
+static void FinishReset()
+{
+	LibretroInput::Reset();
+	s_frame_granted = false;
+
+	std::unique_lock lock(s_mutex);
+	// Audio SPU2 committed after the last completed frame belongs to the run that ended.
+	LibretroAudio::DrainCommitted(&s_published_audio);
+	s_published_audio.discarded_frames += s_published_audio.GetFrameCount();
+	s_published_audio.data.clear();
+	s_frame_published = false;
+	s_capture_failures = 0;
+	if (s_reset_request == ResetRequest::Pending)
+		s_reset_request = ResetRequest::Completed;
+	Console.WriteLnFmt("VM reset after {} frames", s_completed_frames);
+	s_cv.notify_all();
+}
+
+// CPU thread: carries out a frontend reset request. A paused VM resets right away and stays
+// paused; a running VM first leaves execution, and the session loop completes the reset.
+static void RequestVMReset()
+{
+	const VMState state = VMManager::GetState();
+	bool accepted = false;
+	if (state == VMState::Running || state == VMState::Paused)
+		accepted = VMManager::RequestReset();
+	else
+		Console.ErrorFmt("A reset was requested while the VM is in state {}", static_cast<int>(state));
+
+	if (!accepted)
+	{
+		Console.Warning("The VM refused the reset; the session continues unchanged");
+		std::unique_lock lock(s_mutex);
+		if (s_reset_request == ResetRequest::Pending)
+			s_reset_request = ResetRequest::Refused;
+		s_cv.notify_all();
+		return;
+	}
+
+	if (state == VMState::Paused)
+		FinishReset();
 }
 
 // Reads back the frame whose vsync the CPU thread has just queued, so the GS has merged it
@@ -304,30 +406,23 @@ static void RunSession(const VMBootParameters& boot_params)
 	// The layout belongs to the content this session parsed; no control is held at its start.
 	LibretroInput::Reset();
 
-	// The VM does not run before the frontend requests the first frame.
-	FrameRequestWait first_request;
-	{
-		std::unique_lock lock(s_mutex);
-		first_request = WaitForFrameRequest(lock, VMState::Paused);
-	}
-	if (first_request == FrameRequestWait::Advance)
-	{
-		LibretroInput::Apply(s_frame_input);
-		VMManager::SetState(VMState::Running);
-	}
-	else if (first_request == FrameRequestWait::Stop)
-		VMManager::SetState(VMState::Stopping);
+	// The session runs the VM, which still executes nothing before the first frame request.
+	VMManager::SetState(VMState::Running);
 
 	for (bool running = true; running;)
 	{
 		switch (VMManager::GetState())
 		{
 			case VMState::Running:
-				VMManager::Execute();
+				if (!s_frame_granted)
+					s_frame_granted = AwaitFrameGrant();
+				if (s_frame_granted)
+					VMManager::Execute();
 				break;
 
 			case VMState::Resetting:
 				VMManager::Reset();
+				FinishReset();
 				break;
 
 			case VMState::Paused:
@@ -478,11 +573,11 @@ bool LibretroSession::Start(VMBootParameters boot_params, Error* error)
 	return true;
 }
 
-void LibretroSession::RunFrame(const InputSnapshot& input)
+bool LibretroSession::RunFrame(const InputSnapshot& input)
 {
 	std::unique_lock lock(s_mutex);
 	if (s_session_state != SessionState::Active)
-		return;
+		return false;
 
 	s_requested_input = input;
 	const u64 request = ++s_requested_frames;
@@ -490,6 +585,27 @@ void LibretroSession::RunFrame(const InputSnapshot& input)
 
 	WaitWithDiagnostics(lock, "the next frame",
 		[request]() { return s_completed_frames >= request || s_session_state != SessionState::Active; });
+	return (s_completed_frames >= request && s_request_advanced);
+}
+
+bool LibretroSession::Reset()
+{
+	std::unique_lock lock(s_mutex);
+	if (s_session_state != SessionState::Active)
+	{
+		Console.Warning("A reset was requested without an active VM session");
+		return false;
+	}
+
+	s_reset_request = ResetRequest::Pending;
+	s_cpu_work.push_back(&RequestVMReset);
+	s_cv.notify_all();
+
+	WaitWithDiagnostics(lock, "the VM reset",
+		[]() { return s_reset_request != ResetRequest::Pending || s_session_state != SessionState::Active; });
+	const bool completed = (s_reset_request == ResetRequest::Completed);
+	s_reset_request = ResetRequest::None;
+	return completed;
 }
 
 bool LibretroSession::TakeFrame(Frame* frame)
@@ -612,11 +728,12 @@ void LibretroSession::PumpCPUThread()
 	if (s_requested_frames > s_completed_frames)
 	{
 		s_completed_frames++;
+		s_request_advanced = true;
 	}
 	else
 	{
-		// Only a VM state change made outside the frame requests can run the VM to a vsync
-		// nobody requested; its frame is still presented but completes no request.
+		// The VM only runs on a frame grant, so this means execution resumed without one; the
+		// frame is still presented but completes no request.
 		Console.Warning("The VM reached a vsync without a frame request");
 	}
 
@@ -639,12 +756,9 @@ void LibretroSession::PumpCPUThread()
 
 	// The frame is published before the frontend learns that it completed.
 	s_cv.notify_all();
-
-	// Queued work may pause or reset the VM; execution then leaves for the state handling.
-	const FrameRequestWait wait = WaitForFrameRequest(lock, VMState::Running);
 	lock.unlock();
-	if (wait == FrameRequestWait::Advance)
-		LibretroInput::Apply(s_frame_input);
-	else if (wait == FrameRequestWait::Stop)
-		VMManager::SetState(VMState::Stopping);
+
+	// Queued work may pause or reset the VM; execution then leaves for the state handling,
+	// and the VM waits for a new grant before it runs again.
+	s_frame_granted = AwaitFrameGrant();
 }

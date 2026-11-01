@@ -105,6 +105,8 @@ Scope includes frame delivery and geometry, actual VM refresh rate, sample-rate 
 
 Compare the PCEE2-derived integration with paraLLEl-PS2's CPU/GS coordination, GS queue ownership, queue draining, frame gates, MTVU interactions, backpressure, and graphics-context lifetime. Similar function names do not establish interchangeable behavior.
 
+The [M4 plan](M4.md) separates ownership analysis, repeatable measurement, input investigation, focused synchronization experiments, the GS architecture decision and final regression. It does not require a frontend-owned GS migration or resolution of the deferred reset defects. User-led high-speed input testing remains non-blocking.
+
 Use a short, repeatable workload at the same content checkpoint and settings. Startup and loading are measured separately from active gameplay. Capture frame time and variation, blocking at synchronization points, queue behavior, and input/frame association as relevant to the proposed change.
 
 **Exit criteria:**

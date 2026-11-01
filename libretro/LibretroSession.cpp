@@ -94,6 +94,8 @@ namespace
 	u32 s_capture_failures = 0;
 	// Published at every completion, so timing is known before the first image exists.
 	double s_vsync_frequency = 0.0;
+	// Audio of the completions the frontend has not taken yet.
+	LibretroAudio::Samples s_published_audio;
 
 	// The thread that calls the libretro entry points; only it may forward logs.
 	std::thread::id s_frontend_thread_id;
@@ -186,6 +188,9 @@ static void ResetFrameState()
 	s_frame_published = false;
 	s_capture_failures = 0;
 	s_vsync_frequency = 0.0;
+	s_published_audio.data.clear();
+	s_published_audio.sample_rate = 0;
+	s_published_audio.discarded_frames = 0;
 }
 
 // Parks the CPU thread at a frame boundary until the frontend requests a frame, serving
@@ -334,9 +339,8 @@ static void RunSession(const VMBootParameters& boot_params)
 	}
 
 	VMManager::Shutdown(false);
-	Console.WriteLn("VM shut down");
-
 	std::unique_lock lock(s_mutex);
+	Console.WriteLnFmt("VM shut down after {} frames", s_completed_frames);
 	s_session_state = SessionState::None;
 	s_stop_requested = false;
 	ResetFrameState();
@@ -498,6 +502,15 @@ double LibretroSession::GetVsyncFrequency()
 	return s_vsync_frequency;
 }
 
+void LibretroSession::TakeAudio(LibretroAudio::Samples* samples)
+{
+	samples->data.clear();
+	samples->discarded_frames = 0;
+
+	std::unique_lock lock(s_mutex);
+	std::swap(s_published_audio, *samples);
+}
+
 void LibretroSession::Stop()
 {
 	std::unique_lock lock(s_mutex);
@@ -587,6 +600,8 @@ void LibretroSession::PumpCPUThread()
 
 	std::unique_lock lock(s_mutex);
 	s_vsync_frequency = vsync_frequency;
+	// The audio up to this vsync belongs to the frame it completes.
+	LibretroAudio::DrainCommitted(&s_published_audio);
 	if (s_requested_frames > s_completed_frames)
 	{
 		s_completed_frames++;

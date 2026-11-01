@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "LibretroAudio.h"
+
 #include "common/Pcsx2Types.h"
 
 #include <array>
@@ -61,6 +63,10 @@ namespace LibretroSession
 	/// Emulated vsync frequency in Hz when the latest frame completed, image or not; 0 while
 	/// the session has not completed a frame in an initialized video mode.
 	double GetVsyncFrequency();
+
+	/// Moves the audio of the frames completed since the previous call into `samples`. Each
+	/// completion contributes exactly the frames SPU2 had committed by its vsync.
+	void TakeAudio(LibretroAudio::Samples* samples);
 
 	/// Stops the active VM, if any, and waits until it has shut down.
 	void Stop();

@@ -8,6 +8,8 @@ set_target_properties(pcsx2x6_libretro PROPERTIES
 
 target_sources(pcsx2x6_libretro PRIVATE
 	Libretro.cpp
+	LibretroAudio.cpp
+	LibretroAudio.h
 	LibretroHost.cpp
 	LibretroHost.h
 	LibretroSession.cpp

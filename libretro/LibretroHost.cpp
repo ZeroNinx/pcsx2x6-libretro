@@ -42,6 +42,8 @@ namespace
 	constexpr const char* DIRECTORY_NAME = "pcsx2x6";
 	constexpr const char* CONTENT_EXTENSION = "acgame";
 	constexpr const char* ARCADE_SAVE_DIRECTORY_NAME = "arcade";
+	// Output volume in percent.
+	constexpr u32 CORE_VOLUME = 100;
 
 	constexpr const char* BIOS_OPTION_KEY = "pcsx2x6_bios";
 	constexpr const char* BIOS_OPTION_NONE = "none";
@@ -293,6 +295,10 @@ static void ApplyCoreSettings(const std::string& bios_name)
 	// The maximum frame size reported to the frontend assumes native resolution.
 	s_settings.SetFloatValue("EmuCore/GS", "upscale_multiplier", 1.0f);
 	s_settings.SetStringValue("SPU2/Output", "Backend", "Null");
+	// The frontend paces at an unlimited target speed, so SPU2 applies its fast-forward
+	// volume whenever it is unmuted; both volumes carry the one core volume.
+	s_settings.SetUIntValue("SPU2/Output", "StandardVolume", CORE_VOLUME);
+	s_settings.SetUIntValue("SPU2/Output", "FastForwardVolume", CORE_VOLUME);
 
 	// Input arrives through the libretro API, never from host devices.
 	for (const char* source : {"SDL", "DInput", "XInput", "RawInput"})

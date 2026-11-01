@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 pcsx2x6-libretro contributors
 // SPDX-License-Identifier: GPL-3.0+
 
+#include "LibretroAudio.h"
 #include "LibretroHost.h"
 #include "LibretroSession.h"
 #include "libretro.h"
@@ -33,12 +34,15 @@ namespace
 
 	retro_environment_t s_environment = nullptr;
 	retro_video_refresh_t s_video_refresh = nullptr;
+	retro_audio_sample_batch_t s_audio_batch = nullptr;
 	retro_input_poll_t s_input_poll = nullptr;
 	retro_input_state_t s_input_state = nullptr;
 	bool s_initialized = false;
 
 	// The last frame of the current session; it has no pixels before the first frame.
 	LibretroSession::Frame s_presented_frame;
+	// The audio of the frames completed by the current retro_run.
+	LibretroAudio::Samples s_frame_audio;
 	// Presented while the session has not delivered a frame yet, at the initial geometry.
 	std::array<u32, INITIAL_WIDTH * INITIAL_HEIGHT> s_black_frame = {};
 
@@ -74,6 +78,7 @@ void retro_set_audio_sample(retro_audio_sample_t cb)
 
 void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb)
 {
+	s_audio_batch = cb;
 }
 
 void retro_set_input_poll(retro_input_poll_t cb)
@@ -124,6 +129,7 @@ void retro_get_system_av_info(retro_system_av_info* info)
 void retro_init(void)
 {
 	ResetOutputState();
+	LibretroAudio::Install();
 	s_initialized = true;
 	LibretroHost::InitializeLogging();
 	Console.WriteLnFmt("Core initialized: {}", CORE_VERSION);
@@ -133,8 +139,11 @@ void retro_init(void)
 void retro_deinit(void)
 {
 	LibretroSession::Shutdown();
+	LibretroAudio::Uninstall();
+	LibretroAudio::ResetQueue();
 	// Assigning an empty vector keeps its capacity; exchanging releases the frame memory.
 	std::vector<u32>().swap(s_presented_frame.pixels);
+	std::vector<s16>().swap(s_frame_audio.data);
 	LibretroHost::ReleaseFonts();
 	Console.WriteLn("Core deinitialized");
 	LibretroHost::ShutdownLogging();
@@ -144,6 +153,7 @@ void retro_deinit(void)
 bool retro_load_game(const retro_game_info* game)
 {
 	ResetOutputState();
+	LibretroAudio::ResetQueue();
 
 	Error error;
 	VMBootParameters boot_params;
@@ -179,6 +189,8 @@ void retro_unload_game(void)
 {
 	LibretroSession::Stop();
 	s_presented_frame.pixels.clear();
+	s_frame_audio.data.clear();
+	LibretroAudio::ResetQueue();
 	ResetOutputState();
 	LibretroHost::DrainLogMessages();
 }
@@ -232,8 +244,11 @@ static void AnnounceOutputChanges()
 	const double session_fps = LibretroSession::GetVsyncFrequency();
 	if (session_fps > 0.0)
 		target.timing.fps = session_fps;
+	if (s_frame_audio.sample_rate > 0)
+		target.timing.sample_rate = s_frame_audio.sample_rate;
 
-	const bool timing_changed = !IsSameFrameRate(target.timing.fps, s_accepted_av.timing.fps);
+	const bool timing_changed = !IsSameFrameRate(target.timing.fps, s_accepted_av.timing.fps) ||
+								target.timing.sample_rate != s_accepted_av.timing.sample_rate;
 	if (!timing_changed && IsSameGeometry(target.geometry, s_accepted_av.geometry))
 		return;
 
@@ -252,14 +267,15 @@ static void AnnounceOutputChanges()
 
 	// The update is retried with the next frame; frames still carry their own size meanwhile.
 	if (s_update_rejected && IsSameGeometry(target.geometry, s_rejected_av.geometry) &&
-		IsSameFrameRate(target.timing.fps, s_rejected_av.timing.fps))
+		IsSameFrameRate(target.timing.fps, s_rejected_av.timing.fps) &&
+		target.timing.sample_rate == s_rejected_av.timing.sample_rate)
 	{
 		return;
 	}
 
 	if (timing_changed)
-		Console.ErrorFmt("The frontend rejected the output change to {}x{} at {} Hz", target.geometry.base_width,
-			target.geometry.base_height, target.timing.fps);
+		Console.ErrorFmt("The frontend rejected the output change to {}x{} at {} Hz with {} Hz audio",
+			target.geometry.base_width, target.geometry.base_height, target.timing.fps, target.timing.sample_rate);
 	else
 		Console.ErrorFmt("The frontend rejected the geometry change to {}x{} at aspect ratio {}",
 			target.geometry.base_width, target.geometry.base_height, target.geometry.aspect_ratio);
@@ -273,12 +289,14 @@ void retro_run(void)
 
 	// Without a new frame, the previous one of this session is presented again.
 	LibretroSession::TakeFrame(&s_presented_frame);
+	LibretroSession::TakeAudio(&s_frame_audio);
 	AnnounceOutputChanges();
 	if (s_presented_frame.pixels.empty())
 		s_video_refresh(s_black_frame.data(), INITIAL_WIDTH, INITIAL_HEIGHT, INITIAL_WIDTH * sizeof(u32));
 	else
 		s_video_refresh(s_presented_frame.pixels.data(), s_presented_frame.width, s_presented_frame.height,
 			s_presented_frame.pitch);
+	LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));
 	LibretroHost::DrainLogMessages();
 }
 

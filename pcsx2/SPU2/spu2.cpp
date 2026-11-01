@@ -32,6 +32,7 @@ static bool s_psxmode = false;
 static bool s_output_muted = false;
 
 static std::unique_ptr<AudioStream> s_output_stream;
+static SPU2::OutputStreamFactory s_output_stream_factory = nullptr;
 static std::array<float, AudioStream::CHUNK_SIZE * 2> s_current_chunk;
 static u32 s_current_chunk_pos;
 static u32 s_standard_volume = 0;
@@ -101,6 +102,11 @@ void SPU2writeDMA7Mem(u16* pMem, u32 size)
 	Cores[1].DoDMAwrite(pMem, size);
 }
 
+void SPU2::SetOutputStreamFactory(OutputStreamFactory factory)
+{
+	s_output_stream_factory = factory;
+}
+
 void SPU2::CreateOutputStream()
 {
 	// Initialize volume and mute settings on new session.
@@ -118,8 +124,17 @@ void SPU2::CreateOutputStream()
 	s_output_stream.reset();
 
 	Error error;
-	s_output_stream = AudioStream::CreateStream(EmuConfig.SPU2.Backend, sample_rate, EmuConfig.SPU2.StreamParameters,
-		EmuConfig.SPU2.DriverName.c_str(), EmuConfig.SPU2.DeviceName.c_str(), EmuConfig.SPU2.SyncMode, &error);
+	if (s_output_stream_factory)
+	{
+		s_output_stream = s_output_stream_factory(sample_rate, EmuConfig.SPU2.StreamParameters);
+		if (!s_output_stream)
+			error.SetStringView("The output stream factory did not create a stream.");
+	}
+	else
+	{
+		s_output_stream = AudioStream::CreateStream(EmuConfig.SPU2.Backend, sample_rate, EmuConfig.SPU2.StreamParameters,
+			EmuConfig.SPU2.DriverName.c_str(), EmuConfig.SPU2.DeviceName.c_str(), EmuConfig.SPU2.SyncMode, &error);
+	}
 	if (!s_output_stream)
 	{
 		Host::ReportErrorAsync("Error",

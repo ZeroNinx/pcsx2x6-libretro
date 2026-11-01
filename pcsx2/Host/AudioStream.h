@@ -122,6 +122,9 @@ protected:
 	void BaseInitialize(SampleReader sample_reader, AudioSynchronizationMode sync_mode);
 	static u32 GetFrameCountForMS(u32 sample_rate, u32 milliseconds);
 
+	/// Frames written and not yet read. Exact when called on the thread that writes them.
+	u32 GetBufferedFramesRelaxed() const;
+
 	void ReadFrames(SampleType* samples, u32 num_frames);
 
 	template <AudioExpansionMode mode, ReadChannel c0 = READ_CHANNEL_NONE, ReadChannel c1 = READ_CHANNEL_NONE,
@@ -158,7 +161,6 @@ private:
 	void AllocateBuffer();
 	void DestroyBuffer();
 	static u32 GetAlignedBufferSize(u32 size);
-	u32 GetBufferedFramesRelaxed() const;
 
 	void InternalWriteFrames(const SampleType* samples, u32 num_frames);
 

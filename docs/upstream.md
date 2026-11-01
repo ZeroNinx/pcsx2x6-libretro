@@ -22,7 +22,7 @@ The Windows source dependency `3rdparty/winpixeventruntime/` includes upstream-v
 
 ## Emulation changes
 
-The first eight changes make the emulator safe to load, restart, and unload inside a frontend process, protect saved data, or make startup failures actionable, and are candidates for upstream contribution. The others serve this project: a display aspect query for frontend output, a frontend-selected SRAM save location and the single-library build.
+The first eight changes make the emulator safe to load, restart, and unload inside a frontend process, protect saved data, or make startup failures actionable, and are candidates for upstream contribution. The others serve this project: an SPU2 output stream factory and a display aspect query for frontend output, a frontend-selected SRAM save location and the single-library build.
 
 | Change | Files |
 | --- | --- |
@@ -34,6 +34,7 @@ The first eight changes make the emulator safe to load, restart, and unload insi
 | The patch archive is opened for each lookup and closed when the lookup ends instead of being cached until process exit; source creation failures are reported as open failures, and archive entries are closed after reading | `pcsx2/Patch.cpp`, `common/ZipHelpers.h` |
 | Opening arcade media sets the sector size from the session's declared media instead of keeping the previous session's value; the CHD sector size check compares against that declaration and is skipped with a warning for an unknown media type | `pcsx2/DEV9/ACATA_IO.cpp` |
 | Arcade startup failures name the file involved: a missing or unreadable media image, a missing dongle or save card, with the full path of the expected file | `pcsx2/DEV9/ACATA_IO.cpp`, `pcsx2/VMManager.cpp` |
+| SPU2 can create its output stream through a factory set by the host, and `AudioStream` subclasses can read how many frames are buffered | `pcsx2/SPU2/spu2.h`, `pcsx2/SPU2/spu2.cpp`, `pcsx2/Host/AudioStream.h` |
 | A GS-thread query reports the display aspect ratio of the current output, from the aspect ratio setting and video mode | `pcsx2/GS/GS.h`, `pcsx2/GS/GS.cpp`, `pcsx2/GS/Renderers/Common/GSRenderer.h`, `pcsx2/GS/Renderers/Common/GSRenderer.cpp` |
 | An optional boot parameter keeps arcade SRAM in `<directory>/<gameid>/sram.bin`, seeded from the manifest's image when no save exists; startup rejects a save location that is the source location. File identity comparison is shared through `FileSystem::IsSamePath` | `pcsx2/VMManager.h`, `pcsx2/VMManager.cpp`, `pcsx2/DEV9/ACSRAM.h`, `pcsx2/DEV9/ACSRAM.cpp`, `common/FileSystem.h`, `common/FileSystem.cpp` |
 | The Windows-only `Optimus.cpp` export is removed because it only takes effect in an executable | `pcsx2/windows/Optimus.cpp`, `pcsx2/CMakeLists.txt` |

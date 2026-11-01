@@ -9,6 +9,7 @@
 #include <memory>
 
 struct Pcsx2Config;
+struct AudioStreamParameters;
 
 class AudioStream;
 
@@ -19,6 +20,13 @@ static constexpr u32 SAMPLE_RATE = 48000;
 
 /// PSX Mode Sample Rate.
 static constexpr u32 PSX_SAMPLE_RATE = 44100;
+
+/// Creates an output stream in place of a host audio backend.
+using OutputStreamFactory = std::unique_ptr<AudioStream> (*)(u32 sample_rate, const AudioStreamParameters& parameters);
+
+/// Sets the factory every later output stream is created with; null restores the configured
+/// backend. Takes effect when the next stream is created.
+void SetOutputStreamFactory(OutputStreamFactory factory);
 
 /// Open/close, call at VM startup/shutdown.
 bool Open();

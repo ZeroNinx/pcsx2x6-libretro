@@ -4,6 +4,7 @@
 #include "LibretroSession.h"
 #include "LibretroHost.h"
 
+#include "GS.h"
 #include "MTGS.h"
 #include "VMManager.h"
 
@@ -30,6 +31,15 @@ namespace
 	constexpr auto WATCHDOG_INTERVAL = std::chrono::seconds(10);
 	// About ten seconds of emulated frames.
 	constexpr u32 CAPTURE_FAILURE_REPORT_FRAMES = 600;
+	// The capture fills a 4:3 canvas.
+	constexpr float FRAME_ASPECT_RATIO = 4.0f / 3.0f;
+
+	enum class FrameRequestWait
+	{
+		Advance,
+		Stop,
+		StateChanged,
+	};
 
 	enum class SessionState
 	{
@@ -66,14 +76,21 @@ namespace
 
 	SessionState s_session_state = SessionState::None;
 	bool s_stop_requested = false;
-	bool s_run_token = false;
-	u64 s_frame_count = 0;
+
+	// Frame requests and completions, counted per session. The CPU thread advances only
+	// while a request is pending, so every request yields exactly one vsync.
+	u64 s_requested_frames = 0;
+	u64 s_completed_frames = 0;
+	// Input of the latest request; the CPU thread copies it into s_frame_input when it
+	// starts that frame, and only the CPU thread reads s_frame_input.
+	LibretroSession::InputSnapshot s_requested_input;
+	LibretroSession::InputSnapshot s_frame_input;
 
 	// Frames rotate through three buffers: the CPU thread captures into s_capture_frame,
-	// the session lock guards s_published_frame, and the frontend presents its own buffer.
+	// the session lock guards s_published_frame, and the frontend presents its own frame.
 	// Exchanging them keeps the CPU thread from writing pixels that are being presented.
-	std::vector<u32> s_capture_frame;
-	std::vector<u32> s_published_frame;
+	LibretroSession::Frame s_capture_frame;
+	LibretroSession::Frame s_published_frame;
 	bool s_frame_published = false;
 	u32 s_capture_failures = 0;
 
@@ -157,35 +174,76 @@ static void WaitWhilePaused()
 	VMManager::SetState(VMState::Stopping);
 }
 
-// No frame of a session may reach the frontend after that session. Requires s_mutex.
-static void ClearPublishedFrame()
+// No frame, request or input of a session may outlive it. Requires s_mutex.
+static void ResetFrameState()
 {
-	s_published_frame.clear();
+	s_requested_frames = 0;
+	s_completed_frames = 0;
+	s_requested_input = {};
+	s_frame_input = {};
+	s_published_frame.pixels.clear();
 	s_frame_published = false;
 	s_capture_failures = 0;
+}
+
+// Parks the CPU thread at a frame boundary until the frontend requests a frame, serving
+// queued work meanwhile. The VM is expected to stay in `parked_state`; when queued work
+// changes it, the caller's state handling takes over. Requires s_mutex.
+static FrameRequestWait WaitForFrameRequest(std::unique_lock<std::mutex>& lock, VMState parked_state)
+{
+	for (;;)
+	{
+		if (!s_cpu_work.empty())
+		{
+			RunQueuedWork(lock);
+			continue;
+		}
+
+		if (s_stop_requested)
+			return FrameRequestWait::Stop;
+
+		if (VMManager::GetState() != parked_state)
+			return FrameRequestWait::StateChanged;
+
+		if (s_requested_frames > s_completed_frames)
+		{
+			s_frame_input = s_requested_input;
+			return FrameRequestWait::Advance;
+		}
+
+		s_cv.wait(lock);
+	}
 }
 
 // Reads back the frame whose vsync the CPU thread has just queued, so the GS has merged it
 // by the time it runs the readback. Runs without the session lock while the GS thread works.
 static bool CaptureFrame()
 {
-	using LibretroSession::FRAME_HEIGHT;
-	using LibretroSession::FRAME_WIDTH;
+	using namespace LibretroSession;
 
 	u32 width, height;
-	if (!MTGS::SaveMemorySnapshot(FRAME_WIDTH, FRAME_HEIGHT, true, false, &width, &height, &s_capture_frame))
+	std::vector<u32>& pixels = s_capture_frame.pixels;
+	if (!MTGS::SaveMemorySnapshot(FRAME_WIDTH, FRAME_HEIGHT, true, false, &width, &height, &pixels))
 		return false;
 
-	if (width != FRAME_WIDTH || height != FRAME_HEIGHT)
+	// The frontend relies on these sizes, so a frame outside them is never published.
+	if (width == 0 || height == 0 || width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT ||
+		pixels.size() != static_cast<size_t>(width) * height)
 	{
-		Console.ErrorFmt("Frame readback returned {}x{} instead of {}x{}", width, height, FRAME_WIDTH, FRAME_HEIGHT);
+		Console.ErrorFmt("Frame readback returned {}x{} with {} pixels; the frame is dropped", width, height,
+			pixels.size());
 		return false;
 	}
 
 	// The readback holds R, G, B, A bytes; XRGB8888 is B, G, R, X in little-endian memory.
-	for (u32& pixel : s_capture_frame)
+	for (u32& pixel : pixels)
 		pixel = (pixel & 0xFF00FF00u) | ((pixel >> 16) & 0xFFu) | ((pixel & 0xFFu) << 16);
 
+	s_capture_frame.width = width;
+	s_capture_frame.height = height;
+	s_capture_frame.pitch = width * sizeof(u32);
+	s_capture_frame.aspect_ratio = FRAME_ASPECT_RATIO;
+	s_capture_frame.vertical_frequency = GetVerticalFrequency();
 	return true;
 }
 
@@ -217,9 +275,7 @@ static void RunSession(const VMBootParameters& boot_params)
 
 	{
 		std::unique_lock lock(s_mutex);
-		s_frame_count = 0;
-		s_run_token = false;
-		ClearPublishedFrame();
+		ResetFrameState();
 	}
 	FinishBoot(true, std::string());
 	Console.WriteLn("VM started");
@@ -229,7 +285,17 @@ static void RunSession(const VMBootParameters& boot_params)
 	if (VMManager::GetState() != VMState::Paused)
 		Console.ErrorFmt("VM state after initialization is {}, expected Paused", static_cast<int>(VMManager::GetState()));
 
-	VMManager::SetState(VMState::Running);
+	// The VM does not run before the frontend requests the first frame.
+	FrameRequestWait first_request;
+	{
+		std::unique_lock lock(s_mutex);
+		first_request = WaitForFrameRequest(lock, VMState::Paused);
+	}
+	if (first_request == FrameRequestWait::Advance)
+		VMManager::SetState(VMState::Running);
+	else if (first_request == FrameRequestWait::Stop)
+		VMManager::SetState(VMState::Stopping);
+
 	for (bool running = true; running;)
 	{
 		switch (VMManager::GetState())
@@ -263,8 +329,7 @@ static void RunSession(const VMBootParameters& boot_params)
 	std::unique_lock lock(s_mutex);
 	s_session_state = SessionState::None;
 	s_stop_requested = false;
-	s_run_token = false;
-	ClearPublishedFrame();
+	ResetFrameState();
 	s_cv.notify_all();
 }
 
@@ -392,27 +457,27 @@ bool LibretroSession::Start(VMBootParameters boot_params, Error* error)
 	return true;
 }
 
-void LibretroSession::RunFrame()
+void LibretroSession::RunFrame(const InputSnapshot& input)
 {
 	std::unique_lock lock(s_mutex);
 	if (s_session_state != SessionState::Active)
 		return;
 
-	const u64 next_frame = s_frame_count + 1;
-	s_run_token = true;
+	s_requested_input = input;
+	const u64 request = ++s_requested_frames;
 	s_cv.notify_all();
 
 	WaitWithDiagnostics(lock, "the next frame",
-		[next_frame]() { return s_frame_count >= next_frame || s_session_state != SessionState::Active; });
+		[request]() { return s_completed_frames >= request || s_session_state != SessionState::Active; });
 }
 
-bool LibretroSession::TakeFrame(std::vector<u32>* pixels)
+bool LibretroSession::TakeFrame(Frame* frame)
 {
 	std::unique_lock lock(s_mutex);
 	if (!s_frame_published)
 		return false;
 
-	s_published_frame.swap(*pixels);
+	std::swap(s_published_frame, *frame);
 	s_frame_published = false;
 	return true;
 }
@@ -445,8 +510,8 @@ void LibretroSession::Shutdown()
 	s_exit_requested = false;
 
 	// The CPU thread has ended, so nothing captures into these buffers any more.
-	std::vector<u32>().swap(s_capture_frame);
-	std::vector<u32>().swap(s_published_frame);
+	std::vector<u32>().swap(s_capture_frame.pixels);
+	std::vector<u32>().swap(s_published_frame.pixels);
 }
 
 bool LibretroSession::IsActive()
@@ -503,13 +568,25 @@ void LibretroSession::PumpCPUThread()
 	const bool captured = CaptureFrame();
 
 	std::unique_lock lock(s_mutex);
+	if (s_requested_frames > s_completed_frames)
+	{
+		s_completed_frames++;
+	}
+	else
+	{
+		// Only a VM state change made outside the frame requests can run the VM to a vsync
+		// nobody requested; its frame is still presented but completes no request.
+		Console.Warning("The VM reached a vsync without a frame request");
+	}
+
 	if (captured)
 	{
 		if (s_capture_failures >= CAPTURE_FAILURE_REPORT_FRAMES)
 			Console.WriteLnFmt("Frame readback recovered after {} frames without an image", s_capture_failures);
 
 		s_capture_failures = 0;
-		s_published_frame.swap(s_capture_frame);
+		s_capture_frame.sequence = s_completed_frames;
+		std::swap(s_published_frame, s_capture_frame);
 		s_frame_published = true;
 	}
 	else if (++s_capture_failures % CAPTURE_FAILURE_REPORT_FRAMES == 0)
@@ -519,35 +596,13 @@ void LibretroSession::PumpCPUThread()
 		Console.WarningFmt("No frame could be read back for {} frames", s_capture_failures);
 	}
 
-	// The frame is published before the frontend learns that the vsync completed.
-	s_frame_count++;
+	// The frame is published before the frontend learns that it completed.
 	s_cv.notify_all();
 
-	for (;;)
+	// Queued work may pause or reset the VM; execution then leaves for the state handling.
+	if (WaitForFrameRequest(lock, VMState::Running) == FrameRequestWait::Stop)
 	{
-		if (!s_cpu_work.empty())
-		{
-			RunQueuedWork(lock);
-			continue;
-		}
-
-		if (s_stop_requested)
-		{
-			lock.unlock();
-			VMManager::SetState(VMState::Stopping);
-			return;
-		}
-
-		// Queued work may have paused or reset the VM; execution has to leave for that.
-		if (VMManager::GetState() != VMState::Running)
-			return;
-
-		if (s_run_token)
-		{
-			s_run_token = false;
-			return;
-		}
-
-		s_cv.wait(lock);
+		lock.unlock();
+		VMManager::SetState(VMState::Stopping);
 	}
 }

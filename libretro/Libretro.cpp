@@ -24,17 +24,19 @@ namespace
 	constexpr const char* CORE_VERSION = GIT_REV " (PCSX2x6 " PCSX2X6_BASE_REVISION ")";
 	constexpr const char* CONTENT_EXTENSIONS = "acgame";
 
-	constexpr unsigned FRAME_WIDTH = LibretroSession::FRAME_WIDTH;
-	constexpr unsigned FRAME_HEIGHT = LibretroSession::FRAME_HEIGHT;
+	constexpr u32 FRAME_WIDTH = LibretroSession::FRAME_WIDTH;
+	constexpr u32 FRAME_HEIGHT = LibretroSession::FRAME_HEIGHT;
 	constexpr double NOMINAL_FPS = 59.94;
 	constexpr double SAMPLE_RATE = 48000.0;
 
 	retro_environment_t s_environment = nullptr;
 	retro_video_refresh_t s_video_refresh = nullptr;
+	retro_input_poll_t s_input_poll = nullptr;
+	retro_input_state_t s_input_state = nullptr;
 	bool s_initialized = false;
 
-	// The last frame of the current session, or empty before its first frame.
-	std::vector<u32> s_presented_frame;
+	// The last frame of the current session; it has no pixels before the first frame.
+	LibretroSession::Frame s_presented_frame;
 	// Presented while the session has not delivered a frame yet.
 	std::array<u32, FRAME_WIDTH * FRAME_HEIGHT> s_black_frame = {};
 } // namespace
@@ -67,10 +69,12 @@ void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb)
 
 void retro_set_input_poll(retro_input_poll_t cb)
 {
+	s_input_poll = cb;
 }
 
 void retro_set_input_state(retro_input_state_t cb)
 {
+	s_input_state = cb;
 }
 
 unsigned retro_api_version(void)
@@ -93,8 +97,8 @@ void retro_get_system_av_info(retro_system_av_info* info)
 	std::memset(info, 0, sizeof(*info));
 	info->geometry.base_width = FRAME_WIDTH;
 	info->geometry.base_height = FRAME_HEIGHT;
-	info->geometry.max_width = FRAME_WIDTH;
-	info->geometry.max_height = FRAME_HEIGHT;
+	info->geometry.max_width = LibretroSession::MAX_FRAME_WIDTH;
+	info->geometry.max_height = LibretroSession::MAX_FRAME_HEIGHT;
 	info->geometry.aspect_ratio = 4.0f / 3.0f;
 	info->timing.fps = NOMINAL_FPS;
 	info->timing.sample_rate = SAMPLE_RATE;
@@ -112,7 +116,7 @@ void retro_deinit(void)
 {
 	LibretroSession::Shutdown();
 	// Assigning an empty vector keeps its capacity; exchanging releases the frame memory.
-	std::vector<u32>().swap(s_presented_frame);
+	std::vector<u32>().swap(s_presented_frame.pixels);
 	LibretroHost::ReleaseFonts();
 	Console.WriteLn("Core deinitialized");
 	LibretroHost::ShutdownLogging();
@@ -154,7 +158,7 @@ bool retro_load_game_special(unsigned game_type, const retro_game_info* info, si
 void retro_unload_game(void)
 {
 	LibretroSession::Stop();
-	s_presented_frame.clear();
+	s_presented_frame.pixels.clear();
 	LibretroHost::DrainLogMessages();
 }
 
@@ -162,14 +166,34 @@ void retro_reset(void)
 {
 }
 
+// Samples every RetroPad button of each port. The frontend requires one poll per run
+// before any state query.
+static LibretroSession::InputSnapshot SampleInput()
+{
+	LibretroSession::InputSnapshot input;
+	s_input_poll();
+	for (u32 port = 0; port < LibretroSession::INPUT_PORTS; port++)
+	{
+		for (u32 button = 0; button <= RETRO_DEVICE_ID_JOYPAD_R3; button++)
+		{
+			if (s_input_state(port, RETRO_DEVICE_JOYPAD, 0, button))
+				input.joypad_buttons[port] |= static_cast<u16>(1u << button);
+		}
+	}
+	return input;
+}
+
 void retro_run(void)
 {
-	LibretroSession::RunFrame();
+	LibretroSession::RunFrame(SampleInput());
 
 	// Without a new frame, the previous one of this session is presented again.
 	LibretroSession::TakeFrame(&s_presented_frame);
-	const u32* pixels = s_presented_frame.empty() ? s_black_frame.data() : s_presented_frame.data();
-	s_video_refresh(pixels, FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH * sizeof(u32));
+	if (s_presented_frame.pixels.empty())
+		s_video_refresh(s_black_frame.data(), FRAME_WIDTH, FRAME_HEIGHT, FRAME_WIDTH * sizeof(u32));
+	else
+		s_video_refresh(s_presented_frame.pixels.data(), s_presented_frame.width, s_presented_frame.height,
+			s_presented_frame.pitch);
 	LibretroHost::DrainLogMessages();
 }
 

@@ -1,6 +1,6 @@
 # Development Roadmap
 
-This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 and M2 are complete; M3 is planned in [M3](M3.md), with implementation not yet started.
+This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1 and M2 are complete; [M3](M3.md) is in progress.
 
 ## Objective and initial scope
 

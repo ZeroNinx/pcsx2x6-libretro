@@ -289,8 +289,9 @@ static void ApplyCoreSettings(const std::string& bios_name)
 
 	// The core owns a device without a window, and the frontend paces the session.
 	s_settings.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::VK));
-	s_settings.SetBoolValue("EmuCore/GS", "FrameLimitEnable", false);
 	s_settings.SetBoolValue("EmuCore/GS", "VsyncEnable", false);
+	// The maximum frame size reported to the frontend assumes native resolution.
+	s_settings.SetFloatValue("EmuCore/GS", "upscale_multiplier", 1.0f);
 	s_settings.SetStringValue("SPU2/Output", "Backend", "Null");
 
 	// Input arrives through the libretro API, never from host devices.
@@ -460,6 +461,8 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 	// SRAM is a core extension of the save layout: one image per gameid, seeded from the
 	// manifest's image on first use. x6 resolves the gameid and creates the game folder.
 	boot_params->filename = std::move(native_content_path);
+	// Unlimited disables the VM's own frame limiter: the frontend paces every frame.
+	boot_params->start_unlimited = true;
 	boot_params->arcade_save_directory = Path::Combine(save_directory, ARCADE_SAVE_DIRECTORY_NAME);
 	return true;
 }

@@ -22,7 +22,7 @@ The Windows source dependency `3rdparty/winpixeventruntime/` includes upstream-v
 
 ## Emulation changes
 
-The first nine changes make the emulator safe to load, restart, and unload inside a frontend process, protect saved data, or make startup failures actionable, and are candidates for upstream contribution. The others serve this project: an SPU2 output stream factory and a display aspect query for frontend output, a frontend-selected SRAM save location and the single-library build.
+The first nine changes make the emulator safe to load, restart, and unload inside a frontend process, protect saved data, or make startup failures actionable, and are candidates for upstream contribution. The others serve this project: audio/video output hooks, frontend-selected storage locations, selective directory creation and the single-library build.
 
 | Change | Files |
 | --- | --- |
@@ -38,6 +38,7 @@ The first nine changes make the emulator safe to load, restart, and unload insid
 | SPU2 can create its output stream through a factory set by the host, and `AudioStream` subclasses can read how many frames are buffered | `pcsx2/SPU2/spu2.h`, `pcsx2/SPU2/spu2.cpp`, `pcsx2/Host/AudioStream.h` |
 | A GS-thread query reports the display aspect ratio of the current output, from the aspect ratio setting and video mode | `pcsx2/GS/GS.h`, `pcsx2/GS/GS.cpp`, `pcsx2/GS/Renderers/Common/GSRenderer.h`, `pcsx2/GS/Renderers/Common/GSRenderer.cpp` |
 | An optional boot parameter keeps arcade SRAM in `<directory>/<gameid>/sram.bin`, seeded from the manifest's image when no save exists; startup rejects a save location that is the source location. File identity comparison is shared through `FileSystem::IsSamePath` | `pcsx2/VMManager.h`, `pcsx2/VMManager.cpp`, `pcsx2/DEV9/ACSRAM.h`, `pcsx2/DEV9/ACSRAM.cpp`, `common/FileSystem.h`, `common/FileSystem.cpp` |
+| An optional dongle directory separates slot-1 firmware from save cards; absolute memory-card filenames are respected. Startup can load folder settings without creating unused directories | `pcsx2/VMManager.h`, `pcsx2/VMManager.cpp`, `pcsx2/Pcsx2Config.cpp` |
 | The Windows-only `Optimus.cpp` export is removed because it only takes effect in an executable | `pcsx2/windows/Optimus.cpp`, `pcsx2/CMakeLists.txt` |
 | shaderc is linked statically and its compiler is owned by the Vulkan shader cache instead of a runtime-loaded library released at process exit | `pcsx2/GS/Renderers/Vulkan/VKShaderCache.cpp`, `cmake/FindShaderc.cmake`, `pcsx2/CMakeLists.txt` |
 

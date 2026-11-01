@@ -23,7 +23,7 @@
 namespace
 {
 	constexpr const char* CORE_NAME = "PCSX2x6";
-	constexpr const char* CORE_VERSION = GIT_REV " (PCSX2x6 " PCSX2X6_BASE_REVISION ")";
+	constexpr const char* CORE_VERSION = PCSX2X6_LIBRETRO_VERSION " (" GIT_REV "; PCSX2x6 " PCSX2X6_BASE_REVISION ")";
 	constexpr const char* CONTENT_EXTENSIONS = "acgame";
 
 	// Reported until a session delivers its own geometry and timing.

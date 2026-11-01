@@ -15,6 +15,7 @@
 #include "ImGui/ImGuiManager.h"
 #include "Input/InputManager.h"
 #include "MTGS.h"
+#include "Patch.h"
 #include "VMManager.h"
 #include "ps2/BiosTools.h"
 
@@ -46,7 +47,9 @@ namespace
 	constexpr u32 CORE_VOLUME = 100;
 
 	constexpr const char* BIOS_OPTION_KEY = "pcsx2x6_bios";
-	constexpr const char* BIOS_OPTION_NONE = "none";
+	constexpr const char* BIOS_OPTION_AUTO = "auto";
+	constexpr const char* REGION_BYPASS_OPTION_KEY = "pcsx2x6_region_check_bypass";
+	constexpr const char* REGION_BYPASS_PATCH_NAME = "Region check bypass";
 
 	constexpr size_t MAX_QUEUED_LOG_MESSAGES = 4096;
 	constexpr unsigned ERROR_MESSAGE_FRAMES = 300;
@@ -72,7 +75,7 @@ namespace
 	std::span<const u8> s_font_data;
 
 	std::vector<std::string> s_bios_option_values;
-	retro_core_option_v2_definition s_core_option_definitions[2];
+	retro_core_option_v2_definition s_core_option_definitions[3];
 } // namespace
 
 // Console.Error() and Console.Warning() log at LOGLEVEL_INFO and carry their
@@ -163,7 +166,13 @@ static bool GetFrontendDirectory(unsigned command, const char* description, std:
 		return false;
 	}
 
-	*directory = Path::Combine(Path::ToNativePath(path), DIRECTORY_NAME);
+	const std::string native_path = Path::Canonicalize(Path::ToNativePath(path));
+	// RetroArch can already include the core name, optionally followed by a content
+	// directory. Never escape the directory supplied by the frontend to flatten it.
+	const bool core_save_directory = command == RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY &&
+		(StringUtil::compareNoCase(Path::GetFileName(native_path), DIRECTORY_NAME) ||
+			StringUtil::compareNoCase(Path::GetFileName(Path::GetDirectory(native_path)), DIRECTORY_NAME));
+	*directory = core_save_directory ? native_path : Path::Combine(native_path, DIRECTORY_NAME);
 	return true;
 }
 
@@ -172,25 +181,38 @@ static std::string GetSourceBiosDirectory(const std::string& system_directory)
 	return Path::Combine(system_directory, "bios");
 }
 
+static bool IsArcadeBios(const std::string& path)
+{
+	u32 version, region;
+	std::string description, zone;
+	return IsBIOS(path.c_str(), version, description, region, zone) && zone == "COH-H";
+}
+
+static std::vector<std::string> FindArcadeBiosImages(const std::string& directory)
+{
+	std::vector<std::string> images;
+	FileSystem::FindResultsArray files;
+	FileSystem::FindFiles(directory.c_str(), "*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_SORT_BY_NAME, &files);
+	for (const FILESYSTEM_FIND_DATA& file : files)
+	{
+		if (IsArcadeBios(file.FileName))
+			images.emplace_back(Path::GetFileName(file.FileName));
+	}
+	return images;
+}
+
 static void RegisterCoreOptions()
 {
-	s_bios_option_values = {BIOS_OPTION_NONE};
+	s_bios_option_values = {BIOS_OPTION_AUTO};
 
 	std::string system_directory;
 	if (GetFrontendDirectory(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, "system", &system_directory, nullptr))
 	{
-		FileSystem::FindResultsArray files;
-		FileSystem::FindFiles(GetSourceBiosDirectory(system_directory).c_str(), "*",
-			FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_SORT_BY_NAME, &files);
-		for (const FILESYSTEM_FIND_DATA& file : files)
+		for (std::string& name : FindArcadeBiosImages(GetSourceBiosDirectory(system_directory)))
 		{
-			u32 version, region;
-			std::string description, zone;
-			if (s_bios_option_values.size() < RETRO_NUM_CORE_OPTION_VALUES_MAX - 1 &&
-				IsBIOS(file.FileName.c_str(), version, description, region, zone))
-			{
-				s_bios_option_values.emplace_back(Path::GetFileName(file.FileName));
-			}
+			if (s_bios_option_values.size() >= RETRO_NUM_CORE_OPTION_VALUES_MAX - 1)
+				break;
+			s_bios_option_values.emplace_back(std::move(name));
 		}
 	}
 
@@ -198,13 +220,22 @@ static void RegisterCoreOptions()
 	retro_core_option_v2_definition& bios_option = s_core_option_definitions[0];
 	bios_option.key = BIOS_OPTION_KEY;
 	bios_option.desc = "BIOS Image";
-	bios_option.info = "Arcade BIOS image from the pcsx2x6/bios folder in the system directory.";
-	bios_option.default_value = BIOS_OPTION_NONE;
+	bios_option.info = "Automatic selects the first valid COH-H arcade BIOS in filename order from system/pcsx2x6/bios. Select a specific image to override it; changes apply on the next content load.";
+	bios_option.default_value = BIOS_OPTION_AUTO;
+	bios_option.values[0].label = "Automatic";
 	for (size_t i = 0; i < s_bios_option_values.size(); i++)
 		bios_option.values[i].value = s_bios_option_values[i].c_str();
 
+	retro_core_option_v2_definition& region_option = s_core_option_definitions[1];
+	region_option.key = REGION_BYPASS_OPTION_KEY;
+	region_option.desc = "Region Check Bypass";
+	region_option.info = "Enable the matching Region check bypass patch from system/pcsx2x6/resources/patches.zip. The archive must be supplied separately. Close and reload content after changing this option.";
+	region_option.default_value = "enabled";
+	region_option.values[0] = {"enabled", "Enabled"};
+	region_option.values[1] = {"disabled", "Disabled"};
+
 	// Frontends also call this while probing core information, with an environment
-	// that rejects everything. Content loading reports a missing BIOS selection.
+	// that rejects everything. BIOS discovery is repeated when loading content.
 	retro_core_options_v2 options{nullptr, s_core_option_definitions};
 	s_environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &options);
 }
@@ -223,9 +254,40 @@ static std::string GetSelectedBios()
 {
 	retro_variable variable{BIOS_OPTION_KEY, nullptr};
 	if (!s_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) || !variable.value)
-		return BIOS_OPTION_NONE;
+		return BIOS_OPTION_AUTO;
 
 	return variable.value;
+}
+
+static bool ResolveBios(const std::string& source_directory, std::string* bios_name, Error* error)
+{
+	*bios_name = GetSelectedBios();
+	// Treat the previous default as Automatic when upgrading an existing configuration.
+	if (bios_name->empty() || *bios_name == BIOS_OPTION_AUTO || *bios_name == "none")
+	{
+		const std::vector<std::string> images = FindArcadeBiosImages(source_directory);
+		if (images.empty())
+		{
+			Error::SetStringFmt(error, "No valid COH-H arcade BIOS was found in '{}'. Add your arcade BIOS dump and its companion files to this folder.", source_directory);
+			return false;
+		}
+		*bios_name = images.front();
+		Console.WriteLnFmt("Automatically selected arcade BIOS '{}'", *bios_name);
+		return true;
+	}
+
+	if (bios_name->find_first_of("/\\:") != std::string::npos || *bios_name == "." || *bios_name == "..")
+	{
+		Error::SetString(error, "The BIOS option must be a filename within system/pcsx2x6/bios.");
+		return false;
+	}
+	const std::string path = Path::Combine(source_directory, *bios_name);
+	if (!IsArcadeBios(path))
+	{
+		Error::SetStringFmt(error, "The selected BIOS '{}' is missing or is not a valid COH-H arcade BIOS. Select Automatic or another arcade BIOS.", path);
+		return false;
+	}
+	return true;
 }
 
 static bool CheckRuntimeResources(Error* error)
@@ -285,9 +347,17 @@ void LibretroHost::ReleaseFonts()
 	s_font_data = {};
 }
 
-static void ApplyCoreSettings(const std::string& bios_name)
+static void ApplyCoreSettings(const std::string& bios_name, bool region_bypass)
 {
 	s_settings.SetStringValue("Filenames", "BIOS", bios_name.c_str());
+	// Only files explicitly requested by the manifest are inserted.
+	s_settings.SetStringValue("MemoryCards", "Slot1_Filename", "");
+	s_settings.SetStringValue("MemoryCards", "Slot2_Filename", "");
+	// x6 enables named arcade groups by default; use its existing enable/disable lists
+	// so only this group is controlled, without disabling other compatibility patches.
+	s_settings.SetStringList(Patch::PATCHES_CONFIG_SECTION,
+		region_bypass ? Patch::PATCH_ENABLE_CONFIG_KEY : Patch::PATCH_DISABLE_CONFIG_KEY,
+		{REGION_BYPASS_PATCH_NAME});
 
 	// The core owns a device without a window, and the frontend paces the session.
 	s_settings.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::VK));
@@ -317,8 +387,11 @@ static void ApplyCoreSettings(const std::string& bios_name)
 	s_settings.SetBoolValue("Logging", "EnableFileLogging", false);
 }
 
-static void LoadCoreSettings(const std::string& bios_name)
+static void LoadCoreSettings(const std::string& bios_name, const std::string& save_directory)
 {
+	retro_variable variable{REGION_BYPASS_OPTION_KEY, nullptr};
+	const bool region_bypass = !s_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) ||
+		!variable.value || std::strcmp(variable.value, "disabled") != 0;
 	{
 		const std::unique_lock lock = Host::GetSettingsLock();
 		if (!Host::Internal::GetBaseSettingsLayer())
@@ -327,59 +400,24 @@ static void LoadCoreSettings(const std::string& bios_name)
 		// AutoDetectSource edits this layer, so a session starts from the defaults.
 		s_settings.Clear();
 		VMManager::SetDefaultSettings(s_settings, true, true, true, true, true);
-		ApplyCoreSettings(bios_name);
+		ApplyCoreSettings(bios_name, region_bypass);
+		s_settings.SetStringValue("Folders", "MemoryCards", Path::Combine(save_directory, "memcards").c_str());
 	}
 
-	VMManager::Internal::LoadStartupSettings();
+	// The core creates only directories used by the active features.
+	VMManager::Internal::LoadStartupSettings(false);
 }
 
-static bool IsBiosCompanionFile(std::string_view file_name, std::string_view bios_name)
+static bool ValidateBios(const std::string& bios_name, Error* error)
 {
-	return StringUtil::compareNoCase(Path::GetFileTitle(file_name), Path::GetFileTitle(bios_name)) ||
-		   StringUtil::StartsWithNoCase(file_name, fmt::format("{}.", bios_name));
-}
-
-// x6 writes .nvm and .mec beside the BIOS it loads, so that BIOS has to live in a
-// writable location. Everything sharing its filename stem comes along, because
-// extra ROMs are optional and a missing one is skipped with only a log message.
-// Existing files are kept: they hold the state of earlier sessions.
-static bool PrepareBiosWorkingCopy(const std::string& source_directory, const std::string& bios_name, Error* error)
-{
-	const std::string source_path = Path::Combine(source_directory, bios_name);
-	if (!FileSystem::FileExists(source_path.c_str()))
-	{
-		Error::SetStringFmt(error, "The selected BIOS '{}' does not exist.", source_path);
-		return false;
-	}
-
-	FileSystem::FindResultsArray files;
-	FileSystem::FindFiles(source_directory.c_str(), "*", FILESYSTEM_FIND_FILES, &files);
-	for (const FILESYSTEM_FIND_DATA& file : files)
-	{
-		const std::string_view file_name = Path::GetFileName(file.FileName);
-		if (!IsBiosCompanionFile(file_name, bios_name))
-			continue;
-
-		const std::string destination = Path::Combine(EmuFolders::Bios, file_name);
-		if (FileSystem::FileExists(destination.c_str()))
-			continue;
-
-		if (!FileSystem::CopyFilePath(file.FileName.c_str(), destination.c_str(), false))
-		{
-			Error::SetStringFmt(error, "Failed to copy '{}' to '{}'.", file.FileName, destination);
-			return false;
-		}
-		Console.WriteLnFmt("Copied BIOS file '{}' to the working directory", file_name);
-	}
-
-	// LoadBIOS() falls back to the first image it can find when the configured file
-	// is unusable, so a bad working copy has to be rejected before startup.
-	const std::string working_path = Path::Combine(EmuFolders::Bios, bios_name);
+	// Do not let x6 silently fall back to another image if the selected one changes
+	// between discovery and startup.
+	const std::string bios_path = Path::Combine(EmuFolders::Bios, bios_name);
 	u32 version, region;
 	std::string description, zone;
-	if (!IsBIOS(working_path.c_str(), version, description, region, zone))
+	if (!IsBIOS(bios_path.c_str(), version, description, region, zone) || zone != "COH-H")
 	{
-		Error::SetStringFmt(error, "'{}' is not a valid BIOS image.", working_path);
+		Error::SetStringFmt(error, "'{}' is not a valid BIOS image.", bios_path);
 		return false;
 	}
 
@@ -418,30 +456,23 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 		return false;
 	}
 
-	const std::string bios_name = GetSelectedBios();
-	if (bios_name == BIOS_OPTION_NONE)
-	{
-		Error::SetString(error, "No BIOS is selected. Choose one in the core options.");
+	const std::string source_bios_directory = GetSourceBiosDirectory(system_directory);
+	std::string bios_name;
+	if (!ResolveBios(source_bios_directory, &bios_name, error))
 		return false;
-	}
 
 	EmuFolders::AppRoot = system_directory;
-	EmuFolders::DataRoot = save_directory;
+	EmuFolders::DataRoot = system_directory;
 	EmuFolders::Resources = Path::Combine(system_directory, "resources");
-	EmuFolders::Settings = Path::Combine(save_directory, "inis");
+	// The in-memory settings need no INI directory. x6 keeps playtime.dat here.
+	EmuFolders::Settings = system_directory;
 	if (!CheckRuntimeResources(error) || !LoadFonts(error))
 		return false;
 
-	// The default settings put the BIOS working copy in <data root>/bios. Nothing is
-	// written below the save directory before this check; a directory that does not
-	// exist yet cannot overlap.
-	const std::string source_bios_directory = GetSourceBiosDirectory(system_directory);
-	if (FileSystem::IsSamePath(source_bios_directory.c_str(), Path::Combine(save_directory, "bios").c_str()))
+	if (FileSystem::IsSamePath(system_directory.c_str(), save_directory.c_str()))
 	{
 		Error::SetStringFmt(error,
-			"The system and save directories share the BIOS folder '{}'. BIOS working files would overwrite "
-			"the source BIOS; use a separate save directory.",
-			source_bios_directory);
+			"The system and save directories share '{}'. Use a separate save directory.", system_directory);
 		return false;
 	}
 
@@ -453,15 +484,15 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 		return false;
 	}
 
-	LoadCoreSettings(bios_name);
-	if (!FileSystem::DirectoryExists(EmuFolders::Bios.c_str()) ||
-		!FileSystem::DirectoryExists(EmuFolders::MemoryCards.c_str()))
+	LoadCoreSettings(bios_name, save_directory);
+	if (!FileSystem::EnsureDirectoryExists(EmuFolders::Cache.c_str(), true, &directory_error))
 	{
-		Error::SetStringFmt(error, "Failed to create the working directories under '{}'.", save_directory);
+		Error::SetStringFmt(error, "Cannot create the cache directory '{}': {}", EmuFolders::Cache,
+			directory_error.GetDescription());
 		return false;
 	}
 
-	if (!PrepareBiosWorkingCopy(source_bios_directory, bios_name, error))
+	if (!ValidateBios(bios_name, error))
 		return false;
 
 	// SRAM is a core extension of the save layout: one image per gameid, seeded from the
@@ -470,6 +501,7 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 	// Unlimited disables the VM's own frame limiter: the frontend paces every frame.
 	boot_params->start_unlimited = true;
 	boot_params->arcade_save_directory = Path::Combine(save_directory, ARCADE_SAVE_DIRECTORY_NAME);
+	boot_params->arcade_dongle_directory = Path::Combine(system_directory, "memcards");
 	return true;
 }
 

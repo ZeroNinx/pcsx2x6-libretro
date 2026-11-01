@@ -591,11 +591,12 @@ bool VMManager::Internal::CheckSettingsVersion()
 	return (bsi->GetUIntValue("UI", "SettingsVersion", &settings_version) && settings_version == SETTINGS_VERSION);
 }
 
-void VMManager::Internal::LoadStartupSettings()
+void VMManager::Internal::LoadStartupSettings(bool create_folders)
 {
 	SettingsInterface* bsi = Host::Internal::GetBaseSettingsLayer();
 	EmuFolders::LoadConfig(*bsi);
-	EmuFolders::EnsureFoldersExist();
+	if (create_folders)
+		EmuFolders::EnsureFoldersExist();
 
 	// We need to create the console window early, otherwise it appears behind the main window.
 	UpdateLoggingSettings(*bsi);
@@ -1468,20 +1469,19 @@ bool VMManager::AutoDetectSource(const VMBootParameters& boot_params, Error* err
 				if (PS2CLK != PS2CLK_DEFAULT)
 					Console.WriteLnFmt(Color_Green, "ACGAME: System {} requested — overclock will be applied", platform);
 
-				// When subdir= is set, basedir points to the subdir (e.g. roms/tekken4/).
-				// Dongle/card files may live elsewhere, so fall back to acgame dir and memcards/.
-				std::string acgamedir = Path::ToNativePath(Path::GetDirectory(filename))+FS_OSPATH_SEPARATOR_CHARACTER;
 				std::string card;
 				// Slot 1 (mc0:) = dongle (boot modules only, no save data).
-				// Always overwrite — DONGLEMAN corrupts this file at runtime.
+				// The emulator may write to it, so this is a working image.
 				if ((card = INI.GetStringValue("data", "dongle", fmt::format("{}.ps2", s_serial).c_str())) != "") {
-					std::string src = Path::Combine(EmuFolders::MemoryCards, card);
+					const std::string src = Path::Combine(boot_params.arcade_dongle_directory.empty() ?
+						EmuFolders::MemoryCards : boot_params.arcade_dongle_directory, card);
 					if (!FileSystem::FileExists(src.c_str())) {
 						Error::SetStringFmt(error, "requested dongle image does not exist! '{}'", src);
 						Console.ErrorFmt("ACGAME: cannot open a dongle file at location '{}'", src);
 						return false;
 					}
-					Host::SetBaseStringSettingValue("MemoryCards", "Slot1_Filename", card.c_str());
+					Host::SetBaseStringSettingValue("MemoryCards", "Slot1_Filename",
+						boot_params.arcade_dongle_directory.empty() ? card.c_str() : src.c_str());
 				}
 				// Slot 2 (mc1:) = save card (e.g. SC2 conquest). Never overwrite existing saves.
 				if ((card = INI.GetStringValue("data", "card", "")) != "") {

@@ -39,6 +39,8 @@ struct VMBootParameters
 	/// When set, an arcade game keeps its SRAM in <directory>/<gameid>/sram.bin and the
 	/// manifest's SRAM image only provides initial data for a missing save.
 	std::string arcade_save_directory;
+	/// When set, resolve the arcade dongle separately from writable save cards.
+	std::string arcade_dongle_directory;
 
 	std::optional<bool> fast_boot;
 	std::optional<bool> fullscreen;
@@ -288,7 +290,7 @@ namespace VMManager
 		bool CheckSettingsVersion();
 
 		/// Loads early settings. Call once on startup.
-		void LoadStartupSettings();
+		void LoadStartupSettings(bool create_folders = true);
 
 		/// Overrides the filename used for the file log.
 		void SetFileLogPath(std::string path);

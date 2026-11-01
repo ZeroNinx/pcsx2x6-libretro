@@ -2113,7 +2113,8 @@ std::string Pcsx2Config::FullpathToBios() const
 
 std::string Pcsx2Config::FullpathToMcd(uint slot) const
 {
-	return Path::Combine(EmuFolders::MemoryCards, Mcd[slot].Filename);
+	return Path::IsAbsolute(Mcd[slot].Filename) ? Mcd[slot].Filename :
+		Path::Combine(EmuFolders::MemoryCards, Mcd[slot].Filename);
 }
 
 void Pcsx2Config::CopyRuntimeConfig(Pcsx2Config& cfg)

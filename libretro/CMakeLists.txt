@@ -12,6 +12,8 @@ target_sources(pcsx2x6_libretro PRIVATE
 	LibretroAudio.h
 	LibretroHost.cpp
 	LibretroHost.h
+	LibretroInput.cpp
+	LibretroInput.h
 	LibretroSession.cpp
 	LibretroSession.h
 	libretro.h

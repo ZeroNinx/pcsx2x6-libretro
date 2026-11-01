@@ -4,6 +4,7 @@
 
 #include "LibretroAudio.h"
 #include "LibretroHost.h"
+#include "LibretroInput.h"
 #include "LibretroSession.h"
 #include "libretro.h"
 
@@ -39,6 +40,12 @@ namespace
 	retro_input_state_t s_input_state = nullptr;
 	bool s_initialized = false;
 
+	// The device the frontend assigned to each input port; a RetroPad until told otherwise.
+	std::array<bool, LibretroSession::INPUT_PORTS> s_port_connected = {true, true};
+	// Set when the frontend assigns a port's device and cleared when the next input sample
+	// carries it, so a disconnect and reconnect between two frames is not lost.
+	std::array<bool, LibretroSession::INPUT_PORTS> s_port_device_changed = {};
+
 	// The last frame of the current session; it has no pixels before the first frame.
 	LibretroSession::Frame s_presented_frame;
 	// The audio of the frames completed by the current retro_run.
@@ -65,6 +72,7 @@ void retro_set_environment(retro_environment_t cb)
 
 	s_environment = cb;
 	LibretroHost::SetEnvironment(cb);
+	LibretroInput::DescribeControllers(cb);
 }
 
 void retro_set_video_refresh(retro_video_refresh_t cb)
@@ -176,6 +184,9 @@ bool retro_load_game(const retro_game_info* game)
 		return false;
 	}
 
+	// The session has parsed the content, so its control layout is known.
+	LibretroInput::DescribeInputs(s_environment);
+
 	LibretroHost::DrainLogMessages();
 	return true;
 }
@@ -207,6 +218,12 @@ static LibretroSession::InputSnapshot SampleInput()
 	s_input_poll();
 	for (u32 port = 0; port < LibretroSession::INPUT_PORTS; port++)
 	{
+		input.connected[port] = s_port_connected[port];
+		input.device_changed[port] = s_port_device_changed[port];
+		s_port_device_changed[port] = false;
+		if (!input.connected[port])
+			continue;
+
 		for (u32 button = 0; button <= RETRO_DEVICE_ID_JOYPAD_R3; button++)
 		{
 			if (s_input_state(port, RETRO_DEVICE_JOYPAD, 0, button))
@@ -331,6 +348,27 @@ unsigned retro_get_region(void)
 
 void retro_set_controller_port_device(unsigned port, unsigned device)
 {
+	if (port >= LibretroSession::INPUT_PORTS)
+		return;
+
+	// Only devices the frontend reports are seen; a physical unplug it does not report reads
+	// as released buttons on a still connected port.
+	s_port_device_changed[port] = true;
+	switch (device & RETRO_DEVICE_MASK)
+	{
+		case RETRO_DEVICE_NONE:
+			s_port_connected[port] = false;
+			break;
+
+		case RETRO_DEVICE_JOYPAD:
+			s_port_connected[port] = true;
+			break;
+
+		default:
+			Console.WarningFmt("Port {} was given unsupported device {}; it is treated as disconnected", port + 1, device);
+			s_port_connected[port] = false;
+			break;
+	}
 }
 
 void* retro_get_memory_data(unsigned id)

@@ -3,6 +3,7 @@
 
 #include "LibretroSession.h"
 #include "LibretroHost.h"
+#include "LibretroInput.h"
 
 #include "GS.h"
 #include "GS/GS.h"
@@ -300,6 +301,9 @@ static void RunSession(const VMBootParameters& boot_params)
 	if (VMManager::GetState() != VMState::Paused)
 		Console.ErrorFmt("VM state after initialization is {}, expected Paused", static_cast<int>(VMManager::GetState()));
 
+	// The layout belongs to the content this session parsed; no control is held at its start.
+	LibretroInput::Reset();
+
 	// The VM does not run before the frontend requests the first frame.
 	FrameRequestWait first_request;
 	{
@@ -307,7 +311,10 @@ static void RunSession(const VMBootParameters& boot_params)
 		first_request = WaitForFrameRequest(lock, VMState::Paused);
 	}
 	if (first_request == FrameRequestWait::Advance)
+	{
+		LibretroInput::Apply(s_frame_input);
 		VMManager::SetState(VMState::Running);
+	}
 	else if (first_request == FrameRequestWait::Stop)
 		VMManager::SetState(VMState::Stopping);
 
@@ -634,9 +641,10 @@ void LibretroSession::PumpCPUThread()
 	s_cv.notify_all();
 
 	// Queued work may pause or reset the VM; execution then leaves for the state handling.
-	if (WaitForFrameRequest(lock, VMState::Running) == FrameRequestWait::Stop)
-	{
-		lock.unlock();
+	const FrameRequestWait wait = WaitForFrameRequest(lock, VMState::Running);
+	lock.unlock();
+	if (wait == FrameRequestWait::Advance)
+		LibretroInput::Apply(s_frame_input);
+	else if (wait == FrameRequestWait::Stop)
 		VMManager::SetState(VMState::Stopping);
-	}
 }

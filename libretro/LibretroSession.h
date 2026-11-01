@@ -28,10 +28,13 @@ namespace LibretroSession
 	constexpr u32 INPUT_PORTS = 2;
 
 	/// Input the frontend sampled for one frame request. Each port holds one bit per
-	/// RETRO_DEVICE_ID_JOYPAD_* button.
+	/// RETRO_DEVICE_ID_JOYPAD_* button, whether the frontend has a device on it, and whether
+	/// the frontend assigned the port's device since the previous request.
 	struct InputSnapshot
 	{
 		std::array<u16, INPUT_PORTS> joypad_buttons = {};
+		std::array<bool, INPUT_PORTS> connected = {};
+		std::array<bool, INPUT_PORTS> device_changed = {};
 	};
 
 	/// The image of a completed frame: the GS composite output at its own size, in XRGB8888,

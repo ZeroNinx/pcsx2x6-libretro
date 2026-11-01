@@ -86,7 +86,7 @@ Writable-state handling includes SRAM/cards and BIOS-side `.nvm`/`.mec` files. R
 
 Continue M2's Vulkan Surfaceless device, separate GS thread and synchronous readback. Replace fixed-canvas assumptions with owned frame geometry and actual VM timing, and establish input/frame and audio/frame association before considering a different presentation or threading model. Hardware-image handoff, border cropping and additional backends are not prerequisites. The sequence and interface contracts are defined in [M3](M3.md).
 
-Scope includes frame delivery and geometry, actual VM refresh rate, sample-rate reporting, bounded audio buffering, JVS button and coin input, Service/Test controls, reset, content reload, and persistent arcade data. The frontend controls overall pacing; the Host must coordinate VM progress with `retro_run()` rather than retain a competing desktop limiter. API responsibilities follow the [libretro core development documentation](https://docs.libretro.com/development/cores/developing-cores/).
+Scope includes frame delivery and geometry, actual VM refresh rate, sample-rate reporting, bounded audio buffering, JVS button and coin input, Service/Test controls, reset, content reload, and persistent arcade data. M3.4a adds basic two-player digital Don/Ka input for NM00054; high-speed chart testing is user-led, outside milestone acceptance, and does not block later stages. The frontend controls overall pacing; the Host must coordinate VM progress with `retro_run()` rather than retain a competing desktop limiter. API responsibilities follow the [libretro core development documentation](https://docs.libretro.com/development/cores/developing-cores/).
 
 **Exit criteria:**
 

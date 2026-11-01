@@ -2020,14 +2020,10 @@ bool InputManager::IsInputSourceEnabled(SettingsInterface& si, InputSourceType t
 template <typename T>
 void InputManager::UpdateInputSourceState(SettingsInterface& si, std::unique_lock<std::mutex>& settings_lock, InputSourceType type)
 {
+	// Every source object exists so that callers can query it; only an enabled source is
+	// initialized, below.
 	if (!s_input_sources[static_cast<u32>(type)])
-	{
-		std::unique_ptr<InputSource> source = std::make_unique<T>();
-		if (!source->Initialize(si, settings_lock))
-			Console.Error("(InputManager) Source '%s' failed to initialize.", InputSourceToString(type));
-
-		s_input_sources[static_cast<u32>(type)] = std::move(source);
-	}
+		s_input_sources[static_cast<u32>(type)] = std::make_unique<T>();
 
 	const bool enabled = IsInputSourceEnabled(si, type);
 	if (enabled)

@@ -4,7 +4,7 @@ This document defines milestone boundaries and acceptance criteria. Each milesto
 
 ## Objective and initial scope
 
-Build a libretro core that preserves PCSX2x6's NAMCO System 246 / 256 emulation behavior. Use PCSX2x6 as the initial emulation base, PCEE2 as the primary integration reference, PCSX2 as the upstream behavior reference, and paraLLEl-PS2 as a scheduling and rendering reference.
+Build a libretro core that preserves PCSX2x6's NAMCO System 246 / 256 emulation behavior. Use PCSX2x6 as the initial emulation base, PCEE2 as the primary integration reference, PCSX2 as the upstream behavior reference, and paraLLEl-PS2 as a performance, scheduling and rendering reference.
 
 The initial implementation target is desktop Windows x86-64 with one fixed RetroArch version and one graphics presentation path. Additional platforms, graphics backends, and arcade peripherals are later work. There is no frame-rate or latency improvement target for the first functional core.
 
@@ -18,7 +18,7 @@ The emulation source keeps its upstream paths under `pcsx2/` and `common/`, with
 | [M1 — Minimal libretro Host](M1.md) | Can the frontend load the library and manage its lifetime safely? | Shared-library target, Host adapter, VM lifecycle boundary, logging |
 | [M2 — Boot one System246 game](M2.md) | Does the existing arcade boot path survive the new Host? | One System246 title reaches an agreed startup checkpoint |
 | [M3 — Basic video, audio, and input](M3.md) | Does the playable core preserve standalone behavior? | One functional presentation path, audio delivery, JVS input, save-data handling |
-| [M4 — Investigate scheduling](M4.md) | Which synchronization choices improve the measured workload? | Scheduling analysis and a measured decision for each proposed change |
+| [M4 — Performance optimization and scheduling](M4.md) | Which changes reduce work and improve real-time headroom? | An applicable LRPS2 change inventory and measured performance decisions |
 | [M5 — Performance and compatibility](M5.md) | Which additional targets and workloads justify further work? | Separately scoped optimization and compatibility improvements |
 
 M0 precedes integration. M1 establishes the Host boundary; M2 validates arcade boot; M3 establishes the functional reference for M4 and M5. Limited display or device plumbing may be implemented earlier when required by VM initialization or boot diagnosis.
@@ -99,24 +99,24 @@ Scope includes frame delivery and geometry, actual VM refresh rate, sample-rate 
 
 **Deferred:** speed targets, additional renderers, full peripheral coverage, savestates, rewind, runahead, and netplay. Savestate-based features require their own state-completeness and memory-budget work before being advertised.
 
-## M4 — Investigate scheduling
+## M4 — Performance optimization and scheduling
 
-**Purpose:** measure the working core before changing its threading model.
+**Purpose:** develop the working port into an efficient libretro core by reducing computation, synchronization and transfer costs, using paraLLEl-PS2 as a source reference and the working core as the before/after baseline. Improve throughput, frame-time stability and real-time headroom on constrained hardware; power is a diagnostic and trade-off, not the sole goal.
 
-Compare the PCEE2-derived integration with paraLLEl-PS2's CPU/GS coordination, GS queue ownership, queue draining, frame gates, MTVU interactions, backpressure, and graphics-context lifetime. Similar function names do not establish interchangeable behavior.
+Compare relevant changes against PCSX2 ancestry and the selected x6 implementation: host/pacing, CPU/VU execution, SPU2, renderer transfers and presentation, notifications and waits. Verify the effective configuration before attributing a difference to code. Different board clocks, audio rates, content or output quality do not define an equivalent workload.
 
-The [M4 plan](M4.md) separates ownership analysis, repeatable measurement, input investigation, focused synchronization experiments, the GS architecture decision and final regression. It does not require a frontend-owned GS migration or resolution of the deferred reset defects. User-led high-speed input testing remains non-blocking.
+The [M4 plan](M4.md) preserves the completed ownership analysis and frame-cost measurements, then prioritizes applicable performance changes and matched measurements. High-speed input investigation is deferred behind performance work. GS consumer placement and hardware-image delivery remain separate decisions with separately scoped implementations.
 
-Use a short, repeatable workload at the same content checkpoint and settings. Startup and loading are measured separately from active gameplay. Capture frame time and variation, blocking at synchronization points, queue behavior, and input/frame association as relevant to the proposed change.
+Use bounded, repeatable windows at the same checkpoint and settings. Measure uncapped throughput and frame-time tails separately from normally paced CPU/GPU work. For power comparisons, distinguish the configured limit, measured package power and whole-device discharge, excluding loading and unpaced preparation. Preserve emulation progress, audio correctness and output quality in every comparison.
 
 **Exit criteria:**
 
-- A written comparison explains producer/consumer ownership, presentation ownership, and progress during pause, stop, context loss, and startup failure.
-- Each proposed change names a measured problem, changes one relevant scheduling choice at a time, and includes before/after evidence.
-- Accepted changes preserve M3 behavior and lifecycle guarantees; unsupported or regressing experiments are rejected.
-- Keeping the initial scheduling model is an acceptable result when measurements do not justify a replacement.
+- A written comparison explains applicable LRPS2 changes, current producer/consumer and presentation ownership, and progress during pause, stop, context loss and startup failure.
+- Each selected experiment addresses a defined cost, changes one variable and includes matched before/after evidence for its claimed throughput, frame-time or work reduction, with real-time correctness checks.
+- Claimed benefits exceed observed variability and preserve M3 behavior, output quality and lifecycle guarantees. Assess relevant power trade-offs; a wattage reduction is not required for every performance improvement. Unsupported or regressing experiments are rejected.
+- Keeping the current architecture or leaving the high-speed input issue unresolved is acceptable when the evidence supports it.
 
-**Deferred:** an automatic wholesale switch to paraLLEl-PS2's model or a general speed claim based only on boot progress or CPU utilization.
+**Deferred:** wholesale fork migration, broad compatibility work, or energy/latency claims based only on uncapped FPS, source size, CPU utilization or power-limit settings.
 
 ## M5 — Performance and compatibility
 

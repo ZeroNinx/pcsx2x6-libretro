@@ -4,7 +4,7 @@ These issues remain open while core integration proceeds. They are outside the a
 
 | ID | Issue | Status | Follow-up |
 | --- | --- | --- | --- |
-| ISSUE-001 | Missed drum hits in fast charts | Reported in both the core and standalone PCSX2x6; cause unresolved | Input comparison with paraLLEl-PS2 |
+| ISSUE-001 | Missed drum hits in fast charts | Reported in both the core and standalone PCSX2x6; cause unresolved | Deferred behind performance work; input comparison with paraLLEl-PS2 |
 | ISSUE-002 | Reset failure after arcade execution | Also reproducible in standalone PCSX2x6; upstream defect unresolved | Separate emulator reset investigation |
 | ISSUE-003 | Excess audio after resetting a running VM | Observed in the core; suspected SPU2 timing cause unverified | Investigate with ISSUE-002 |
 

@@ -53,6 +53,9 @@ public:
 
 	bool SaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspect, bool crop_borders,
 		u32* width, u32* height, std::vector<u32>* pixels);
+	/// Display aspect ratio the current output is presented at, from the aspect ratio setting
+	/// and the current video mode.
+	float GetDisplayAspectRatio();
 
 	void QueueSnapshot(const std::string& path, const u32 gsdump_frames);
 	void StopGSDump();

@@ -109,6 +109,8 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config);
 void GSSetSoftwareRendering(bool software_renderer, GSInterlaceMode new_interlace);
 bool GSSaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspect, bool crop_borders,
 	u32* width, u32* height, std::vector<u32>* pixels);
+/// Display aspect ratio of the current output, or 0 without a renderer. GS thread only.
+float GSGetDisplayAspectRatio();
 void GSJoinSnapshotThreads();
 
 namespace Host

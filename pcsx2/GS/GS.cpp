@@ -951,6 +951,11 @@ bool GSSaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspe
 		width, height, pixels);
 }
 
+float GSGetDisplayAspectRatio()
+{
+	return g_gs_renderer ? g_gs_renderer->GetDisplayAspectRatio() : 0.0f;
+}
+
 #ifdef _WIN32
 
 static HANDLE s_fh = NULL;

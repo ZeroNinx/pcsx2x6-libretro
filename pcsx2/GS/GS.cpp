@@ -956,6 +956,16 @@ float GSGetDisplayAspectRatio()
 	return g_gs_renderer ? g_gs_renderer->GetDisplayAspectRatio() : 0.0f;
 }
 
+bool GSGetDisplayImageSize(u32* width, u32* height)
+{
+	return g_gs_renderer && g_gs_renderer->GetDisplayImageSize(width, height);
+}
+
+bool GSDrawDisplayImage(GSTexture* target)
+{
+	return g_gs_renderer && g_gs_renderer->DrawDisplayImage(target);
+}
+
 #ifdef _WIN32
 
 static HANDLE s_fh = NULL;

@@ -48,7 +48,7 @@ namespace
 	// carries it, so a disconnect and reconnect between two frames is not lost.
 	std::array<bool, LibretroSession::INPUT_PORTS> s_port_device_changed = {};
 
-	// The last frame of the current session; it has no pixels before the first frame.
+	// The last frame of the current session; its size is 0 before the first frame.
 	LibretroSession::Frame s_presented_frame;
 	// The audio of the frames completed by the current retro_run.
 	LibretroAudio::Samples s_frame_audio;
@@ -157,8 +157,7 @@ void retro_deinit(void)
 	LibretroSession::Shutdown();
 	LibretroAudio::Uninstall();
 	LibretroAudio::ResetQueue();
-	// Assigning an empty vector keeps its capacity; exchanging releases the frame memory.
-	std::vector<u32>().swap(s_presented_frame.pixels);
+	// Assigning an empty vector keeps its capacity; exchanging releases the audio memory.
 	std::vector<s16>().swap(s_frame_audio.data);
 	LibretroHost::ReleaseFonts();
 	Console.WriteLn("Core deinitialized");
@@ -251,7 +250,7 @@ void retro_unload_game(void)
 	s_context_lost = false;
 	LibretroSession::Stop();
 	LibretroSession::CloseGS();
-	s_presented_frame.pixels.clear();
+	s_presented_frame = {};
 	s_frame_audio.data.clear();
 	LibretroAudio::ResetQueue();
 	ResetOutputState();
@@ -265,7 +264,8 @@ void retro_reset(void)
 	{
 		// Nothing from before the reset is presented or played afterwards; until the reset VM
 		// completes an image, the frontend sees a black frame.
-		s_presented_frame.pixels.clear();
+		s_presented_frame = {};
+		LibretroVulkan::ClearOutput();
 		s_frame_audio.data.clear();
 		LibretroAudio::DiscardQueued();
 	}
@@ -313,7 +313,7 @@ static bool IsSameFrameRate(double first, double second)
 static void AnnounceOutputChanges()
 {
 	retro_system_av_info target = s_accepted_av;
-	if (!s_presented_frame.pixels.empty())
+	if (s_presented_frame.width != 0)
 	{
 		target.geometry.base_width = s_presented_frame.width;
 		target.geometry.base_height = s_presented_frame.height;
@@ -362,6 +362,30 @@ static void AnnounceOutputChanges()
 	s_update_rejected = true;
 }
 
+// Hands the latest frame to the frontend. Without a new one, the frontend repeats the previous
+// image, or is given the previous image again when it cannot repeat frames itself.
+static void PresentFrame(bool new_frame)
+{
+	if (new_frame)
+	{
+		LibretroVulkan::SetOutputImage(s_presented_frame.slot);
+		s_video_refresh(RETRO_HW_FRAME_BUFFER_VALID, s_presented_frame.width, s_presented_frame.height, 0);
+	}
+	else if (s_can_dupe)
+	{
+		s_video_refresh(nullptr, s_presented_frame.width, s_presented_frame.height, 0);
+	}
+	else if (s_presented_frame.width != 0)
+	{
+		LibretroVulkan::SetOutputImage(s_presented_frame.slot);
+		s_video_refresh(RETRO_HW_FRAME_BUFFER_VALID, s_presented_frame.width, s_presented_frame.height, 0);
+	}
+	else if (!std::exchange(s_missing_dupe_reported, true))
+	{
+		Console.Error("The frontend cannot repeat frames, and there is no image to present yet");
+	}
+}
+
 void retro_run(void)
 {
 	// The VM stopped with the frontend's context, and the frontend still runs the content.
@@ -372,21 +396,36 @@ void retro_run(void)
 		return;
 	}
 
-	// A paused VM completes the request without running; the frame it presents again has no
-	// audio, and audio still queued from earlier frames waits until the VM runs again.
-	const bool advanced = LibretroSession::RunFrame(SampleInput());
+	if (LibretroVulkan::OutputFailed())
+	{
+		ContextFailed("An output image could not be created on the frontend's Vulkan device.");
+		return;
+	}
 
-	// Without a new frame, the previous one of this session is presented again.
-	LibretroSession::TakeFrame(&s_presented_frame);
+	// The frame is drawn into the image of the frontend's current sync index. A paused VM
+	// completes the request without running; the frame it presents again has no audio, and
+	// audio still queued from earlier frames waits until the VM runs again.
+	const u32 output_slot = LibretroVulkan::AcquireOutputSlot();
+	const bool advanced = LibretroSession::RunFrame(SampleInput(), output_slot);
+
+	bool new_frame = LibretroSession::TakeFrame(&s_presented_frame);
+
+	// Nothing has been shown since the content started or was reset, and the VM drew nothing,
+	// for instance while it is paused: black is shown instead.
+	if (!new_frame && s_presented_frame.width == 0 && !LibretroVulkan::OutputFailed())
+		new_frame = LibretroSession::DrawBlackFrame(output_slot, &s_presented_frame);
+
+	// An output image that could not be prepared ends the session before anything is presented.
+	if (LibretroVulkan::OutputFailed())
+	{
+		ContextFailed("An output image could not be created on the frontend's Vulkan device.");
+		return;
+	}
+
 	if (advanced)
 		LibretroSession::TakeAudio(&s_frame_audio);
 	AnnounceOutputChanges();
-	// A hardware context only takes GPU images, which the session does not deliver yet; until
-	// then the frontend repeats what it shows.
-	if (s_can_dupe)
-		s_video_refresh(nullptr, s_accepted_av.geometry.base_width, s_accepted_av.geometry.base_height, 0);
-	else if (!std::exchange(s_missing_dupe_reported, true))
-		Console.Error("The frontend cannot repeat frames, and no GPU image is delivered yet");
+	PresentFrame(new_frame);
 	if (advanced)
 		LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));
 	LibretroHost::DrainLogMessages();

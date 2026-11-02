@@ -37,17 +37,16 @@ namespace LibretroSession
 		std::array<bool, INPUT_PORTS> device_changed = {};
 	};
 
-	/// The image of a completed frame: the GS composite output at its own size, in XRGB8888,
-	/// with the display aspect ratio the GS presents it at.
+	/// The image of a completed frame: the GS composite output at its own size, drawn into a
+	/// frontend output slot, with the display aspect ratio the GS presents it at.
 	struct Frame
 	{
 		/// Number of the frame request this frame completed, counted from 1 per session.
 		u64 sequence = 0;
-		std::vector<u32> pixels;
+		/// The output slot holding the image; see LibretroVulkan::RenderOutput().
+		u32 slot = 0;
 		u32 width = 0;
 		u32 height = 0;
-		/// Bytes per row.
-		u32 pitch = 0;
 		float aspect_ratio = 0.0f;
 	};
 
@@ -66,11 +65,11 @@ namespace LibretroSession
 	/// when the GS is not open.
 	void CloseGS();
 
-	/// Requests one frame with the given input: the VM advances to its next vsync and no
-	/// further. Returns once that frame has been completed and published: true when the VM
+	/// Requests one frame with the given input, drawn into `output_slot`: the VM advances to its
+	/// next vsync and no further. Returns once that frame has been completed and published: true when the VM
 	/// advanced, false when there is no active session or a paused VM completed the request
 	/// without running, leaving the input unapplied apart from its device changes.
-	bool RunFrame(const InputSnapshot& input);
+	bool RunFrame(const InputSnapshot& input, u32 output_slot);
 
 	/// Resets the VM of the active session on the CPU thread. Returns true once the reset has
 	/// actually happened, leaving the VM running or paused as before and waiting for the next
@@ -78,8 +77,13 @@ namespace LibretroSession
 	/// while a memory card is being written, in which case the session continues unchanged.
 	bool Reset();
 
-	/// Exchanges the frame published since the previous call with `frame`. Returns false,
-	/// leaving `frame` untouched, when no new frame was published.
+	/// Draws opaque black into `output_slot` without running the VM, for a frame request that
+	/// produced no image while nothing has been shown yet. Returns false, leaving `frame`
+	/// untouched, without an active session or when the image cannot be drawn.
+	bool DrawBlackFrame(u32 output_slot, Frame* frame);
+
+	/// Copies the frame published since the previous call into `frame`. Returns false, leaving
+	/// `frame` untouched, when no new frame was published.
 	bool TakeFrame(Frame* frame);
 
 	/// Emulated vsync frequency in Hz when the latest frame completed, image or not; 0 while

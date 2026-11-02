@@ -1056,6 +1056,31 @@ float GSRenderer::GetDisplayAspectRatio()
 	return GetCurrentAspectRatioFloat(GetVideoMode() == GSVideoMode::SDTV_480P);
 }
 
+bool GSRenderer::GetDisplayImageSize(u32* width, u32* height)
+{
+	// Without a target size or aspect correction, the snapshot keeps the composite texture size.
+	const GSTexture* const current = g_gs_device->GetCurrent();
+	if (!current)
+		return false;
+
+	*width = static_cast<u32>(current->GetWidth());
+	*height = static_cast<u32>(current->GetHeight());
+	return true;
+}
+
+bool GSRenderer::DrawDisplayImage(GSTexture* target)
+{
+	GSTexture* const current = g_gs_device->GetCurrent();
+	if (!current)
+		return false;
+
+	const GSVector4i src_rect(CalculateDrawSrcRect(current, m_real_size));
+	const GSVector4 src_uv(GSVector4(src_rect) / GSVector4(current->GetSize()).xyxy());
+	const GSVector4 dst_rect(0.0f, 0.0f, static_cast<float>(target->GetWidth()), static_cast<float>(target->GetHeight()));
+	g_gs_device->StretchRect(current, src_uv, target, dst_rect, ShaderConvert::TRANSPARENCY_FILTER, Biln);
+	return true;
+}
+
 bool GSRenderer::SaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspect, bool crop_borders,
 	u32* width, u32* height, std::vector<u32>* pixels)
 {

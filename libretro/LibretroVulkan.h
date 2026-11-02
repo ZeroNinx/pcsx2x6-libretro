@@ -5,6 +5,8 @@
 
 #include "libretro.h"
 
+#include "common/Pcsx2Types.h"
+
 struct retro_hw_render_interface_vulkan;
 
 /// The Vulkan context the frontend shares with the GS. The frontend creates the instance and
@@ -30,4 +32,39 @@ namespace LibretroVulkan
 
 	/// Frontend thread: the frontend's Vulkan interface while its context is ready; null otherwise.
 	const retro_hw_render_interface_vulkan* GetInterface();
+
+	/// Frontend thread, before each frame request: waits as the frontend requires for its current
+	/// sync index and returns it. The frame is drawn into the output slot of that index.
+	u32 AcquireOutputSlot();
+
+	/// Frontend thread: makes the next frames black until the GS draws a new image, so nothing
+	/// from before a reset is shown again.
+	void ClearOutput();
+
+	enum class OutputResult
+	{
+		/// The slot holds the frame's image, or black while there is none to show.
+		Drawn,
+		/// The GS has no new image; the previous one stays valid.
+		Unchanged,
+		/// The slot could not be prepared; the reason was logged.
+		Failed,
+	};
+
+	/// GS thread: draws the current output image into `slot` at its own size and submits the work
+	/// without waiting for the GPU. Reports the size of the image drawn.
+	OutputResult RenderOutput(u32 slot, u32* width, u32* height);
+
+	/// GS thread: draws opaque black into `slot` regardless of the GS output, for a frontend frame
+	/// that has no image to show while the VM does not run.
+	OutputResult RenderBlackOutput(u32 slot, u32* width, u32* height);
+
+	/// GS thread: releases every output slot. Must run before the GS device is destroyed.
+	void ReleaseOutputs();
+
+	/// Frontend thread: hands the image of `slot` to the frontend for the next video refresh.
+	void SetOutputImage(u32 slot);
+
+	/// Frontend thread: whether an output image could not be prepared, which ends the session.
+	bool OutputFailed();
 } // namespace LibretroVulkan

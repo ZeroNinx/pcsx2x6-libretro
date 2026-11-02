@@ -57,6 +57,14 @@ public:
 	/// and the current video mode.
 	float GetDisplayAspectRatio();
 
+	/// The size SaveSnapshotToMemory() reads the current output at when given no target size,
+	/// aspect correction or cropping. Returns false while there is no output image.
+	bool GetDisplayImageSize(u32* width, u32* height);
+
+	/// Draws the current output into the whole of `target`, as SaveSnapshotToMemory() reads it.
+	/// Returns false while there is no output image.
+	bool DrawDisplayImage(GSTexture* target);
+
 	void QueueSnapshot(const std::string& path, const u32 gsdump_frames);
 	void StopGSDump();
 	void PresentCurrentFrame();

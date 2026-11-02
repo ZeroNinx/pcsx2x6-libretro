@@ -13,6 +13,8 @@
 #include <string_view>
 #include <vector>
 
+class GSTexture;
+
 enum class RenderAPI
 {
 	None,
@@ -111,6 +113,12 @@ bool GSSaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspe
 	u32* width, u32* height, std::vector<u32>* pixels);
 /// Display aspect ratio of the current output, or 0 without a renderer. GS thread only.
 float GSGetDisplayAspectRatio();
+/// Size of the current output image as GSSaveSnapshotToMemory() reads it without a target size,
+/// aspect correction or cropping. False without an image or renderer. GS thread only.
+bool GSGetDisplayImageSize(u32* width, u32* height);
+/// Draws the current output image into the whole of `target`. False without an image or
+/// renderer. GS thread only.
+bool GSDrawDisplayImage(GSTexture* target);
 void GSJoinSnapshotThreads();
 
 namespace Host

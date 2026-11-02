@@ -4,14 +4,18 @@
 #include "LibretroVulkan.h"
 #include "LibretroSession.h"
 
+#include "GS/GS.h"
 #include "GS/Renderers/Vulkan/GSDeviceVK.h"
+#include "GS/Renderers/Vulkan/GSTextureVK.h"
 
 #include "common/Console.h"
 #include "common/Error.h"
 
 #include "libretro_vulkan.h"
 
+#include <array>
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -251,4 +255,205 @@ const retro_hw_render_interface_vulkan* LibretroVulkan::GetInterface()
 {
 	std::unique_lock lock(s_interface_mutex);
 	return s_interface;
+}
+
+namespace
+{
+	// The sync indices a frontend can report: one bit each in get_sync_index_mask().
+	constexpr u32 MAX_OUTPUT_SLOTS = 32;
+
+	// Size of the black image shown before the GS has one of its own.
+	constexpr u32 BLACK_IMAGE_WIDTH = 640;
+	constexpr u32 BLACK_IMAGE_HEIGHT = 480;
+	// Packed as SetClearColor() expects: red in the low byte, alpha in the high byte. The output
+	// is opaque like the drawn images, whose alpha the conversion shader sets to 1.
+	constexpr u32 OPAQUE_BLACK = 0xFF000000u;
+
+	// The image drawn for one frontend sync index. The frontend may keep presenting an earlier
+	// image description, so each slot keeps its description at a fixed address.
+	struct OutputSlot
+	{
+		std::unique_ptr<GSTextureVK> texture;
+		retro_vulkan_image image = {};
+	};
+
+	// Owned by the GS thread; the frontend thread only reads a description while the GS is idle.
+	std::array<OutputSlot, MAX_OUTPUT_SLOTS> s_output_slots;
+
+	// Frontend thread: the sync index mask the slots were made for.
+	u32 s_sync_index_mask = 0;
+
+	// Set by the frontend thread, consumed by the GS thread.
+	std::atomic<bool> s_rebuild_outputs{false};
+	std::atomic<bool> s_black_until_image{true};
+
+	// Set by the GS thread when an output image cannot be prepared; the session cannot go on.
+	std::atomic<bool> s_output_failed{false};
+} // namespace
+
+u32 LibretroVulkan::AcquireOutputSlot()
+{
+	const retro_hw_render_interface_vulkan* const iface = GetInterface();
+	if (!iface)
+	{
+		Console.Error("An output slot was requested without the frontend's Vulkan context");
+		return 0;
+	}
+
+	// A changed mask means the frontend's device is idle, so every slot can be recreated.
+	const u32 mask = iface->get_sync_index_mask(iface->handle);
+	if (mask != s_sync_index_mask)
+	{
+		s_sync_index_mask = mask;
+		s_rebuild_outputs.store(true, std::memory_order_release);
+	}
+
+	const u32 index = iface->get_sync_index(iface->handle);
+	iface->wait_sync_index(iface->handle);
+	if (index >= MAX_OUTPUT_SLOTS || !(mask & (1u << index)))
+	{
+		Console.ErrorFmt("The frontend reported sync index {} outside its mask {:#x}", index, mask);
+		return 0;
+	}
+
+	return index;
+}
+
+void LibretroVulkan::ClearOutput()
+{
+	s_black_until_image.store(true, std::memory_order_release);
+}
+
+// GS thread: (re)creates the texture of a slot for an image of the given size. A replaced
+// texture is destroyed once the GPU has finished the work submitted before.
+static bool PrepareOutputSlot(OutputSlot& slot, u32 width, u32 height)
+{
+	if (slot.texture && slot.texture->GetWidth() == static_cast<int>(width) &&
+		slot.texture->GetHeight() == static_cast<int>(height))
+		return true;
+
+	slot.texture.reset();
+
+	// The frontend may sample the image with an sRGB view, which an 8-bit format needs a mutable
+	// format for; a render target can be drawn into, sampled and copied from as the frontend requires.
+	slot.texture = GSTextureVK::Create(GSTexture::Type::RenderTarget, GSTexture::Format::Color,
+		static_cast<int>(width), static_cast<int>(height), 1, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT);
+	if (!slot.texture)
+	{
+		Console.ErrorFmt("The {}x{} output image could not be created", width, height);
+		return false;
+	}
+
+	slot.image.image_view = slot.texture->GetView();
+	slot.image.image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	slot.image.create_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, nullptr, 0, slot.texture->GetImage(),
+		VK_IMAGE_VIEW_TYPE_2D, slot.texture->GetVkFormat(),
+		{VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+			VK_COMPONENT_SWIZZLE_IDENTITY},
+		{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+	return true;
+}
+
+// GS thread: draws the current output image into a slot, or opaque black when `has_image` is
+// false, and submits the work without waiting for the GPU.
+static LibretroVulkan::OutputResult DrawOutput(u32 slot_index, bool has_image, u32 image_width, u32 image_height)
+{
+	using LibretroVulkan::OutputResult;
+
+	OutputSlot& slot = s_output_slots[slot_index];
+	if (!PrepareOutputSlot(slot, image_width, image_height))
+	{
+		s_output_failed.store(true, std::memory_order_release);
+		return OutputResult::Failed;
+	}
+
+	// The slot is redrawn completely. The frontend may have changed the layout of what it was
+	// given, so the old contents are discarded rather than transitioned from a tracked layout;
+	// that transition waits for the frontend's reads through its colour attachment barrier.
+	GSDeviceVK* const device = GSDeviceVK::GetInstance();
+	GSTextureVK* const texture = slot.texture.get();
+	device->EndRenderPass();
+	texture->OverrideImageLayout(GSTextureVK::Layout::Undefined);
+	if (has_image)
+	{
+		texture->SetState(GSTexture::State::Invalidated);
+		GSDrawDisplayImage(texture);
+	}
+	else
+	{
+		// Cleared to opaque black through the render pass load operation, not a transfer.
+		const GSVector4i rect(0, 0, static_cast<int>(image_width), static_cast<int>(image_height));
+		device->ClearRenderTarget(texture, OPAQUE_BLACK);
+		device->OMSetRenderTargets(texture, nullptr, rect);
+		device->BeginRenderPassForStretchRect(texture, rect, rect, false);
+	}
+	device->EndRenderPass();
+
+	// Colour writes become visible to the frontend's fragment shader reads, and the work is
+	// submitted now so that it precedes the frontend's use of the image on the shared queue.
+	texture->TransitionToLayout(GSTextureVK::Layout::ShaderReadOnly);
+	device->ExecuteCommandBuffer(false);
+	return OutputResult::Drawn;
+}
+
+LibretroVulkan::OutputResult LibretroVulkan::RenderOutput(u32 slot_index, u32* width, u32* height)
+{
+	if (s_rebuild_outputs.exchange(false, std::memory_order_acq_rel))
+		ReleaseOutputs();
+
+	u32 image_width = 0, image_height = 0;
+	const bool has_image = GSGetDisplayImageSize(&image_width, &image_height);
+	if (!has_image)
+	{
+		// Before the first image, and after a reset, black replaces whatever was shown before.
+		if (!s_black_until_image.load(std::memory_order_acquire))
+			return OutputResult::Unchanged;
+		image_width = BLACK_IMAGE_WIDTH;
+		image_height = BLACK_IMAGE_HEIGHT;
+	}
+
+	const OutputResult result = DrawOutput(slot_index, has_image, image_width, image_height);
+	if (result == OutputResult::Drawn && has_image)
+		s_black_until_image.store(false, std::memory_order_release);
+	*width = image_width;
+	*height = image_height;
+	return result;
+}
+
+LibretroVulkan::OutputResult LibretroVulkan::RenderBlackOutput(u32 slot_index, u32* width, u32* height)
+{
+	if (s_rebuild_outputs.exchange(false, std::memory_order_acq_rel))
+		ReleaseOutputs();
+
+	*width = BLACK_IMAGE_WIDTH;
+	*height = BLACK_IMAGE_HEIGHT;
+	return DrawOutput(slot_index, false, BLACK_IMAGE_WIDTH, BLACK_IMAGE_HEIGHT);
+}
+
+void LibretroVulkan::ReleaseOutputs()
+{
+	for (OutputSlot& slot : s_output_slots)
+	{
+		slot.texture.reset();
+		slot.image = {};
+	}
+	s_black_until_image.store(true, std::memory_order_release);
+	s_output_failed.store(false, std::memory_order_release);
+}
+
+bool LibretroVulkan::OutputFailed()
+{
+	return s_output_failed.load(std::memory_order_acquire);
+}
+
+void LibretroVulkan::SetOutputImage(u32 slot)
+{
+	const retro_hw_render_interface_vulkan* const iface = GetInterface();
+	if (!iface)
+	{
+		Console.Error("An output image was presented without the frontend's Vulkan context");
+		return;
+	}
+
+	iface->set_image(iface->handle, &s_output_slots[slot].image, 0, nullptr, iface->queue_index);
 }

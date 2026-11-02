@@ -33,7 +33,10 @@ public:
 
 	~GSTextureVK() override;
 
-	static std::unique_ptr<GSTextureVK> Create(Type type, Format format, int width, int height, int levels);
+	/// `create_flags` adds image creation flags, such as the mutable format an image shared with
+	/// another Vulkan user may need.
+	static std::unique_ptr<GSTextureVK> Create(
+		Type type, Format format, int width, int height, int levels, VkImageCreateFlags create_flags = 0);
 	static std::unique_ptr<GSTextureVK> Adopt(
 		VkImage image, Type type, Format format, int width, int height, int levels, VkFormat vk_format);
 

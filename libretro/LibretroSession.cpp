@@ -4,6 +4,7 @@
 #include "LibretroSession.h"
 #include "LibretroHost.h"
 #include "LibretroInput.h"
+#include "LibretroVulkan.h"
 
 #include "GS.h"
 #include "GS/GS.h"
@@ -92,10 +93,12 @@ namespace
 	// while a request is pending, so every request yields exactly one vsync.
 	u64 s_requested_frames = 0;
 	u64 s_completed_frames = 0;
-	// Input of the latest request; the CPU thread copies it into s_frame_input when it
-	// starts that frame, and only the CPU thread reads s_frame_input.
+	// Input and output slot of the latest request; the CPU thread copies them into s_frame_input
+	// and s_frame_slot when it starts that frame, and only the CPU thread reads those.
 	LibretroSession::InputSnapshot s_requested_input;
 	LibretroSession::InputSnapshot s_frame_input;
+	u32 s_requested_slot = 0;
+	u32 s_frame_slot = 0;
 	// Device changes of requests a paused VM completed without applying their input; they
 	// reach the input of the next frame the VM runs, so no reconnect goes unseen.
 	std::array<bool, LibretroSession::INPUT_PORTS> s_unapplied_device_changes = {};
@@ -106,10 +109,7 @@ namespace
 	bool s_frame_granted = false;
 	ResetRequest s_reset_request = ResetRequest::None;
 
-	// Frames rotate through three buffers: the CPU thread captures into s_capture_frame,
-	// the session lock guards s_published_frame, and the frontend presents its own frame.
-	// Exchanging them keeps the CPU thread from writing pixels that are being presented.
-	LibretroSession::Frame s_capture_frame;
+	// The latest completed frame, guarded by the session lock until the frontend takes it.
 	LibretroSession::Frame s_published_frame;
 	bool s_frame_published = false;
 	u32 s_capture_failures = 0;
@@ -217,9 +217,11 @@ static void ResetFrameState()
 	s_completed_frames = 0;
 	s_requested_input = {};
 	s_frame_input = {};
+	s_requested_slot = 0;
+	s_frame_slot = 0;
 	s_unapplied_device_changes = {};
 	s_request_advanced = false;
-	s_published_frame.pixels.clear();
+	s_published_frame = {};
 	s_frame_published = false;
 	s_capture_failures = 0;
 	s_vsync_frequency = 0.0;
@@ -252,6 +254,7 @@ static FrameRequestWait WaitForFrameRequest(std::unique_lock<std::mutex>& lock)
 		if (s_requested_frames > s_completed_frames)
 		{
 			s_frame_input = s_requested_input;
+			s_frame_slot = s_requested_slot;
 			for (u32 port = 0; port < LibretroSession::INPUT_PORTS; port++)
 				s_frame_input.device_changed[port] |= std::exchange(s_unapplied_device_changes[port], false);
 			return FrameRequestWait::Advance;
@@ -327,43 +330,38 @@ static void RequestVMReset()
 		FinishReset();
 }
 
-// Reads back the frame whose vsync the CPU thread has just queued, so the GS has merged it
-// by the time it runs the readback. Runs without the session lock while the GS thread works.
-static bool CaptureFrame()
+// Draws the frame whose vsync the CPU thread has just queued into its output slot, so the GS
+// has merged it by the time it runs the job. Returns whether a new image was drawn. Runs
+// without the session lock while the GS thread works; waits for the GS to submit the drawing,
+// not for the GPU to finish it.
+static bool CaptureFrame(LibretroSession::Frame* frame)
 {
 	using namespace LibretroSession;
 
-	// Without a target size or aspect correction, the snapshot is the composite texture as
-	// the GS produced it; the aspect ratio is read in the same GS job so both describe it.
+	// The aspect ratio is read in the same GS job as the image, so both describe it.
+	const u32 slot = s_frame_slot;
 	u32 width = 0, height = 0;
 	float aspect_ratio = 0.0f;
-	bool read = false;
-	std::vector<u32>& pixels = s_capture_frame.pixels;
-	MTGS::RunOnGSThread([&width, &height, &aspect_ratio, &read, &pixels]() {
-		read = GSSaveSnapshotToMemory(0, 0, false, false, &width, &height, &pixels);
+	LibretroVulkan::OutputResult result = LibretroVulkan::OutputResult::Unchanged;
+	MTGS::RunOnGSThread([slot, &width, &height, &aspect_ratio, &result]() {
+		result = LibretroVulkan::RenderOutput(slot, &width, &height);
 		aspect_ratio = GSGetDisplayAspectRatio();
 	});
 	MTGS::WaitGS(false, false, false);
-	if (!read)
+	if (result != LibretroVulkan::OutputResult::Drawn)
 		return false;
 
 	// The frontend relies on these sizes, so a frame outside them is never published.
-	if (width == 0 || height == 0 || width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT ||
-		pixels.size() != static_cast<size_t>(width) * height || !(aspect_ratio > 0.0f))
+	if (width == 0 || height == 0 || width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT || !(aspect_ratio > 0.0f))
 	{
-		Console.ErrorFmt("Frame readback returned {}x{} with {} pixels at aspect ratio {}; the frame is dropped",
-			width, height, pixels.size(), aspect_ratio);
+		Console.ErrorFmt("The GS drew a {}x{} frame at aspect ratio {}; the frame is dropped", width, height, aspect_ratio);
 		return false;
 	}
 
-	// The readback holds R, G, B, A bytes; XRGB8888 is B, G, R, X in little-endian memory.
-	for (u32& pixel : pixels)
-		pixel = (pixel & 0xFF00FF00u) | ((pixel >> 16) & 0xFFu) | ((pixel & 0xFFu) << 16);
-
-	s_capture_frame.width = width;
-	s_capture_frame.height = height;
-	s_capture_frame.pitch = width * sizeof(u32);
-	s_capture_frame.aspect_ratio = aspect_ratio;
+	frame->slot = slot;
+	frame->width = width;
+	frame->height = height;
+	frame->aspect_ratio = aspect_ratio;
 	return true;
 }
 
@@ -628,19 +626,25 @@ void LibretroSession::CloseGS()
 
 	RunOnCPUThread(
 		[]() {
-			if (MTGS::IsOpen())
-				MTGS::WaitForClose();
+			if (!MTGS::IsOpen())
+				return;
+
+			// The output images live on the GS device, so they go before it.
+			MTGS::RunOnGSThread(&LibretroVulkan::ReleaseOutputs);
+			MTGS::WaitGS(false, false, false);
+			MTGS::WaitForClose();
 		},
 		true);
 }
 
-bool LibretroSession::RunFrame(const InputSnapshot& input)
+bool LibretroSession::RunFrame(const InputSnapshot& input, u32 output_slot)
 {
 	std::unique_lock lock(s_mutex);
 	if (s_session_state != SessionState::Active)
 		return false;
 
 	s_requested_input = input;
+	s_requested_slot = output_slot;
 	const u64 request = ++s_requested_frames;
 	s_cv.notify_all();
 
@@ -669,13 +673,39 @@ bool LibretroSession::Reset()
 	return completed;
 }
 
+bool LibretroSession::DrawBlackFrame(u32 output_slot, Frame* frame)
+{
+	if (!IsActive())
+		return false;
+
+	// The GS belongs to the CPU thread, which serves this work whether the VM is parked or paused.
+	LibretroVulkan::OutputResult result = LibretroVulkan::OutputResult::Failed;
+	u32 width = 0, height = 0;
+	RunOnCPUThread(
+		[output_slot, &result, &width, &height]() {
+			MTGS::RunOnGSThread([output_slot, &result, &width, &height]() {
+				result = LibretroVulkan::RenderBlackOutput(output_slot, &width, &height);
+			});
+			MTGS::WaitGS(false, false, false);
+		},
+		true);
+	if (result != LibretroVulkan::OutputResult::Drawn)
+		return false;
+
+	frame->slot = output_slot;
+	frame->width = width;
+	frame->height = height;
+	frame->aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
+	return true;
+}
+
 bool LibretroSession::TakeFrame(Frame* frame)
 {
 	std::unique_lock lock(s_mutex);
 	if (!s_frame_published)
 		return false;
 
-	std::swap(s_published_frame, *frame);
+	*frame = s_published_frame;
 	s_frame_published = false;
 	return true;
 }
@@ -723,10 +753,6 @@ void LibretroSession::Shutdown()
 	WaitWithDiagnostics(lock, "CPU thread shutdown", []() { return s_worker_state == WorkerState::Exited; });
 	JoinCPUThread(lock);
 	s_exit_requested = false;
-
-	// The CPU thread has ended, so nothing captures into these buffers any more.
-	std::vector<u32>().swap(s_capture_frame.pixels);
-	std::vector<u32>().swap(s_published_frame.pixels);
 }
 
 bool LibretroSession::IsActive()
@@ -780,7 +806,8 @@ void LibretroSession::RequestStop()
 
 void LibretroSession::PumpCPUThread()
 {
-	const bool captured = CaptureFrame();
+	LibretroSession::Frame frame;
+	const bool captured = CaptureFrame(&frame);
 	// Until the BIOS sets a video mode, the emulator only has a placeholder frequency.
 	const double vsync_frequency = (gsVideoMode != GS_VideoMode::Uninitialized) ? GetVerticalFrequency() : 0.0;
 
@@ -803,18 +830,17 @@ void LibretroSession::PumpCPUThread()
 	if (captured)
 	{
 		if (s_capture_failures >= CAPTURE_FAILURE_REPORT_FRAMES)
-			Console.WriteLnFmt("Frame readback recovered after {} frames without an image", s_capture_failures);
+			Console.WriteLnFmt("Frame output recovered after {} frames without a new image", s_capture_failures);
 
 		s_capture_failures = 0;
-		s_capture_frame.sequence = s_completed_frames;
-		std::swap(s_published_frame, s_capture_frame);
+		frame.sequence = s_completed_frames;
+		s_published_frame = frame;
 		s_frame_published = true;
 	}
 	else if (++s_capture_failures % CAPTURE_FAILURE_REPORT_FRAMES == 0)
 	{
-		// Frames without an image are expected while the GS has nothing to show yet; a long
-		// run of them means the frontend keeps presenting an old or black frame.
-		Console.WarningFmt("No frame could be read back for {} frames", s_capture_failures);
+		// A long run of frames without a new image means the frontend keeps presenting an old one.
+		Console.WarningFmt("No new frame image for {} frames", s_capture_failures);
 	}
 
 	// The frame is published before the frontend learns that it completed.

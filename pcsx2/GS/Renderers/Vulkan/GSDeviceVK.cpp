@@ -78,6 +78,9 @@ static constexpr VkClearValue s_present_clear_color = {{{0.0f, 0.0f, 0.0f, 1.0f}
 // We need to synchronize instance creation because of adapter enumeration from the UI thread.
 static std::mutex s_instance_mutex;
 
+// The host context the next device is created on; see SetExternalContext().
+static const GSDeviceVK::ExternalContext* s_external_context = nullptr;
+
 // Device extensions that are required for PCSX2.
 static constexpr const char* s_required_device_extensions[] = {
 	VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
@@ -95,7 +98,7 @@ GSDeviceVK::GSDeviceVK()
 GSDeviceVK::~GSDeviceVK() = default;
 
 VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtensions* oe, bool enable_debug_utils,
-	bool enable_validation_layer)
+	bool enable_validation_layer, const std::function<VkInstance(const VkInstanceCreateInfo&)>& create_instance)
 {
 	ExtensionList enabled_extensions;
 	if (!SelectInstanceExtensions(&enabled_extensions, wi, oe, enable_debug_utils))
@@ -130,12 +133,58 @@ VkInstance GSDeviceVK::CreateVulkanInstance(const WindowInfo& wi, OptionalExtens
 		instance_create_info.ppEnabledLayerNames = layer_names;
 	}
 
+	if (create_instance)
+	{
+		const VkInstance instance = create_instance(instance_create_info);
+		if (instance == VK_NULL_HANDLE)
+			Console.Error("VK: The host failed to create the Vulkan instance.");
+		return instance;
+	}
+
 	VkInstance instance;
 	VkResult res = vkCreateInstance(&instance_create_info, nullptr, &instance);
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkCreateInstance failed: ");
 		return nullptr;
+	}
+
+	return instance;
+}
+
+void GSDeviceVK::SetExternalContext(const ExternalContext* context)
+{
+	pxAssertRel(!g_gs_device, "The external context changes while a GS device exists.");
+	s_external_context = context;
+}
+
+VkInstance GSDeviceVK::CreateExternalInstance(PFN_vkGetInstanceProcAddr get_instance_proc_addr,
+	const std::function<VkInstance(const VkInstanceCreateInfo&)>& create_instance, OptionalExtensions* oe)
+{
+	std::unique_lock lock(s_instance_mutex);
+	if (!Vulkan::LoadVulkanModuleFunctions(get_instance_proc_addr))
+		return VK_NULL_HANDLE;
+
+	*oe = {};
+	const VkInstance instance = CreateVulkanInstance(WindowInfo(), oe, false, false, create_instance);
+	if (instance == VK_NULL_HANDLE)
+	{
+		Vulkan::ResetVulkanLibraryFunctionPointers();
+		return VK_NULL_HANDLE;
+	}
+
+	// The host never receives an instance this fails on, so it is destroyed here.
+	if (!Vulkan::LoadVulkanInstanceFunctions(instance))
+	{
+		Console.Error("VK: Failed to load the instance functions of the host's Vulkan instance.");
+		const auto destroy_instance =
+			reinterpret_cast<PFN_vkDestroyInstance>(get_instance_proc_addr(instance, "vkDestroyInstance"));
+		if (destroy_instance)
+			destroy_instance(instance, nullptr);
+		else
+			Console.Error("VK: The failed Vulkan instance cannot be destroyed without vkDestroyInstance.");
+		Vulkan::ResetVulkanLibraryFunctionPointers();
+		return VK_NULL_HANDLE;
 	}
 
 	return instance;
@@ -487,7 +536,10 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	u32 spin_queue_index = 0;
 	for (uint32_t i = 0; i < queue_family_count; i++)
 	{
+		// A host is handed this queue, and its Vulkan interface requires graphics and compute on it.
 		VkBool32 graphics_supported = queue_family_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT;
+		if (m_external_context && !(queue_family_properties[i].queueFlags & VK_QUEUE_COMPUTE_BIT))
+			graphics_supported = VK_FALSE;
 		if (graphics_supported)
 		{
 			m_graphics_queue_family_index = i;
@@ -522,6 +574,10 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 	}
 	for (uint32_t i = 0; i < queue_family_count; i++)
 	{
+		// A host's device has only the queues the host requested, so there is no spin queue.
+		if (m_external_context)
+			break;
+
 		// Pick a queue for spinning
 		if (!(queue_family_properties[i].queueFlags & VK_QUEUE_COMPUTE_BIT))
 			continue; // We need compute
@@ -665,11 +721,29 @@ bool GSDeviceVK::CreateDevice(VkSurfaceKHR surface, bool enable_validation_layer
 		Vulkan::AddPointerToChain(&device_info, &fragment_shader_interlock_ext_feature);
 	}
 
-	VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
-	if (res != VK_SUCCESS)
+	if (m_external_context)
 	{
-		LOG_VULKAN_ERROR(res, "vkCreateDevice failed: ");
-		return false;
+		if (!m_external_context->create_device)
+		{
+			Console.Error("VK: The host is not creating a device for the GS.");
+			return false;
+		}
+
+		m_device = m_external_context->create_device(m_physical_device, device_info);
+		if (m_device == VK_NULL_HANDLE)
+		{
+			Console.Error("VK: The host failed to create the Vulkan device.");
+			return false;
+		}
+	}
+	else
+	{
+		VkResult res = vkCreateDevice(m_physical_device, &device_info, nullptr, &m_device);
+		if (res != VK_SUCCESS)
+		{
+			LOG_VULKAN_ERROR(res, "vkCreateDevice failed: ");
+			return false;
+		}
 	}
 
 	// With the device created, we can fill the remaining entry points.
@@ -1106,6 +1180,16 @@ void GSDeviceVK::WaitForFenceCounter(u64 fence_counter)
 
 void GSDeviceVK::WaitForGPUIdle()
 {
+	// Waiting for a whole shared device would need every host queue synchronized; the GS only
+	// uses the graphics queue, so waiting for that queue under its lock is enough.
+	if (m_external_context)
+	{
+		m_external_context->lock_queue();
+		vkQueueWaitIdle(m_graphics_queue);
+		m_external_context->unlock_queue();
+		return;
+	}
+
 	vkDeviceWaitIdle(m_device);
 }
 
@@ -1278,7 +1362,12 @@ void GSDeviceVK::SubmitCommandBuffer(VKSwapChain* present_swap_chain)
 		submit_info.pSignalSemaphores = &m_spin_resources[m_current_frame].semaphore;
 	}
 
+	// A host shares the graphics queue, so the submission holds its queue lock.
+	if (m_external_context)
+		m_external_context->lock_queue();
 	res = vkQueueSubmit(m_graphics_queue, 1, &submit_info, resources.fence);
+	if (m_external_context)
+		m_external_context->unlock_queue();
 	if (res != VK_SUCCESS)
 	{
 		LOG_VULKAN_ERROR(res, "vkQueueSubmit failed: ");
@@ -2194,6 +2283,19 @@ void GSDeviceVK::Destroy()
 
 	VKShaderCache::Destroy();
 
+	// The host owns the shared instance and loader. It only owns the device once it has taken
+	// it; a device it never received is destroyed here.
+	if (m_external_context)
+	{
+		if (m_device != VK_NULL_HANDLE && !m_external_context->device_handed_over)
+			vkDestroyDevice(m_device, nullptr);
+		m_device = VK_NULL_HANDLE;
+		m_instance = VK_NULL_HANDLE;
+		m_external_context = nullptr;
+		Vulkan::ResetVulkanLibraryFunctionPointers();
+		return;
+	}
+
 	if (m_device != VK_NULL_HANDLE)
 		vkDestroyDevice(m_device, nullptr);
 
@@ -2538,11 +2640,24 @@ void GSDeviceVK::InsertDebugMessage(DebugMessageCategory category, const char* f
 bool GSDeviceVK::CreateDeviceAndSwapChain()
 {
 	std::unique_lock lock(s_instance_mutex);
-	bool enable_debug_utils = GSConfig.UseDebugDevice;
-	bool enable_validation_layer = GSConfig.UseDebugDevice;
+	m_external_context = s_external_context;
 
+	// A host's instance and device stay free of debug layers the host did not ask for.
+	bool enable_debug_utils = GSConfig.UseDebugDevice && !m_external_context;
+	bool enable_validation_layer = GSConfig.UseDebugDevice && !m_external_context;
+
+	// A host loads the entry points through its own loader. They are loaded again for every
+	// device, because destroying a device on a host context resets them.
 	Error error;
-	if (!Vulkan::LoadVulkanLibrary(&error))
+	if (m_external_context)
+	{
+		if (!Vulkan::LoadVulkanModuleFunctions(m_external_context->get_instance_proc_addr))
+		{
+			Console.Error("VK: Failed to load the Vulkan functions through the host's loader.");
+			return false;
+		}
+	}
+	else if (!Vulkan::LoadVulkanLibrary(&error))
 	{
 		Error::AddPrefix(&error, "Failed to load Vulkan library. Does your GPU and/or driver support Vulkan?\nThe error was:\n");
 		Host::ReportErrorAsync("Error", error.GetDescription());
@@ -2552,7 +2667,20 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	if (!AcquireWindow(true))
 		return false;
 
-	m_instance = CreateVulkanInstance(m_window_info, &m_optional_extensions, enable_debug_utils, enable_validation_layer);
+	if (m_external_context)
+	{
+		m_instance = m_external_context->instance;
+		m_optional_extensions = m_external_context->instance_extensions;
+		if (m_instance == VK_NULL_HANDLE)
+		{
+			Console.Error("VK: The host provided no Vulkan instance.");
+			return false;
+		}
+	}
+	else
+	{
+		m_instance = CreateVulkanInstance(m_window_info, &m_optional_extensions, enable_debug_utils, enable_validation_layer);
+	}
 	if (m_instance == VK_NULL_HANDLE)
 	{
 		if (enable_debug_utils || enable_validation_layer)
@@ -2585,7 +2713,12 @@ bool GSDeviceVK::CreateDeviceAndSwapChain()
 	}
 
 	const bool is_default_gpu = GSConfig.Adapter == GetDefaultAdapter();
-	if (!(GSConfig.Adapter.empty() || is_default_gpu))
+	if (m_external_context && m_external_context->physical_device != VK_NULL_HANDLE)
+	{
+		// The host shares its device on the GPU it chose; the adapter setting does not apply.
+		m_physical_device = m_external_context->physical_device;
+	}
+	else if (!(GSConfig.Adapter.empty() || is_default_gpu))
 	{
 		u32 gpu_index = 0;
 		for (; gpu_index < static_cast<u32>(gpus.size()); gpu_index++)

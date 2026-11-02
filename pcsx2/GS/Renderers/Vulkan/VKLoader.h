@@ -91,6 +91,9 @@ namespace Vulkan
 {
 	bool IsVulkanLibraryLoaded();
 	bool LoadVulkanLibrary(Error* error);
+	/// Loads the global entry points through a host's vkGetInstanceProcAddr instead of opening
+	/// the Vulkan library; the host keeps its loader, so nothing is unloaded afterwards.
+	bool LoadVulkanModuleFunctions(PFN_vkGetInstanceProcAddr get_instance_proc_addr);
 	bool LoadVulkanInstanceFunctions(VkInstance instance);
 	bool LoadVulkanDeviceFunctions(VkDevice device);
 	void UnloadVulkanLibrary();

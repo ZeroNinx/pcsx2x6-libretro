@@ -87,6 +87,39 @@ bool Vulkan::LoadVulkanLibrary(Error* error)
 	return true;
 }
 
+bool Vulkan::LoadVulkanModuleFunctions(PFN_vkGetInstanceProcAddr get_instance_proc_addr)
+{
+	pxAssertRel(!s_vulkan_library.IsOpen(), "Vulkan module is not loaded.");
+
+	bool required_functions_missing = false;
+	auto LoadFunction = [&required_functions_missing, get_instance_proc_addr](PFN_vkVoidFunction* func_ptr, const char* name, bool is_required) {
+		// vkGetInstanceProcAddr cannot be queried without an instance on every loader.
+		*func_ptr = std::strcmp(name, "vkGetInstanceProcAddr") == 0 ?
+						reinterpret_cast<PFN_vkVoidFunction>(get_instance_proc_addr) :
+						get_instance_proc_addr(VK_NULL_HANDLE, name);
+		// Without an instance, vkDestroyInstance cannot be queried; the host destroys its own
+		// instance, so the GS never needs it.
+		if (!(*func_ptr) && is_required && std::strcmp(name, "vkDestroyInstance") != 0)
+		{
+			ERROR_LOG("Vulkan: Failed to load required module function {}", name);
+			required_functions_missing = true;
+		}
+	};
+
+#define VULKAN_MODULE_ENTRY_POINT(name, required) \
+	LoadFunction(reinterpret_cast<PFN_vkVoidFunction*>(&name), #name, required);
+#include "VKEntryPoints.inl"
+#undef VULKAN_MODULE_ENTRY_POINT
+
+	if (required_functions_missing)
+	{
+		ResetVulkanLibraryFunctionPointers();
+		return false;
+	}
+
+	return true;
+}
+
 void Vulkan::UnloadVulkanLibrary()
 {
 	ResetVulkanLibraryFunctionPointers();

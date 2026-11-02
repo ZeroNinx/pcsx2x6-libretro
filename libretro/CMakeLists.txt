@@ -17,10 +17,15 @@ target_sources(pcsx2x6_libretro PRIVATE
 	LibretroInput.h
 	LibretroSession.cpp
 	LibretroSession.h
+	LibretroVulkan.cpp
+	LibretroVulkan.h
 	libretro.h
+	libretro_vulkan.h
 )
 
 target_include_directories(pcsx2x6_libretro PRIVATE
+	# libretro_vulkan.h includes <libretro.h>.
+	"${CMAKE_CURRENT_SOURCE_DIR}"
 	"${CMAKE_BINARY_DIR}/common/include"
 	"${CMAKE_SOURCE_DIR}/pcsx2"
 )

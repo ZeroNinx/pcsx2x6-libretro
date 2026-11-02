@@ -78,6 +78,8 @@ namespace
 
 	std::deque<std::function<void()>> s_cpu_work;
 
+	// Boot parameters of the loaded content until Start() boots them.
+	std::optional<VMBootParameters> s_prepared_boot;
 	std::optional<VMBootParameters> s_boot_request;
 	bool s_boot_done = false;
 	bool s_boot_succeeded = false;
@@ -543,7 +545,7 @@ static bool EnsureCPUThread(std::unique_lock<std::mutex>& lock, Error* error)
 	return true;
 }
 
-bool LibretroSession::Start(VMBootParameters boot_params, Error* error)
+bool LibretroSession::Prepare(VMBootParameters boot_params, Error* error)
 {
 	std::unique_lock lock(s_mutex);
 	s_frontend_thread_id = std::this_thread::get_id();
@@ -556,9 +558,46 @@ bool LibretroSession::Start(VMBootParameters boot_params, Error* error)
 	if (!EnsureCPUThread(lock, error))
 		return false;
 
+	s_prepared_boot = std::move(boot_params);
+	return true;
+}
+
+bool LibretroSession::OpenGS(Error* error)
+{
+	bool opened = false;
+	RunOnCPUThread(
+		[&opened]() {
+			// The GS reads its configuration when it opens.
+			VMManager::ApplySettings();
+			opened = MTGS::WaitForOpen();
+		},
+		true);
+
+	if (!opened)
+		Error::SetString(error, "The GS failed to open on the shared graphics device.");
+	return opened;
+}
+
+bool LibretroSession::Start(Error* error)
+{
+	std::unique_lock lock(s_mutex);
+	if (s_session_state != SessionState::None)
+	{
+		Error::SetString(error, "A VM session is already active.");
+		return false;
+	}
+
+	if (!s_prepared_boot.has_value())
+	{
+		Console.Error("A VM start was requested without prepared content");
+		Error::SetString(error, "No content is prepared to start.");
+		return false;
+	}
+
 	// From here on, a stop request cancels the startup.
 	s_session_state = SessionState::Starting;
-	s_boot_request = std::move(boot_params);
+	s_boot_request = std::move(s_prepared_boot);
+	s_prepared_boot.reset();
 	s_boot_done = false;
 	s_stop_requested = false;
 	s_cv.notify_all();
@@ -571,6 +610,28 @@ bool LibretroSession::Start(VMBootParameters boot_params, Error* error)
 	}
 
 	return true;
+}
+
+void LibretroSession::CloseGS()
+{
+	{
+		std::unique_lock lock(s_mutex);
+		// Only the CPU thread opens the GS, so without one there is nothing to close.
+		if (s_worker_state != WorkerState::Ready)
+			return;
+		if (s_session_state != SessionState::None)
+		{
+			Console.Error("The GS cannot close while the VM session is active");
+			return;
+		}
+	}
+
+	RunOnCPUThread(
+		[]() {
+			if (MTGS::IsOpen())
+				MTGS::WaitForClose();
+		},
+		true);
 }
 
 bool LibretroSession::RunFrame(const InputSnapshot& input)
@@ -637,6 +698,7 @@ void LibretroSession::TakeAudio(LibretroAudio::Samples* samples)
 void LibretroSession::Stop()
 {
 	std::unique_lock lock(s_mutex);
+	s_prepared_boot.reset();
 	if (s_session_state == SessionState::None)
 		return;
 
@@ -649,6 +711,7 @@ void LibretroSession::Stop()
 void LibretroSession::Shutdown()
 {
 	Stop();
+	CloseGS();
 
 	std::unique_lock lock(s_mutex);
 	if (s_worker_state == WorkerState::None)

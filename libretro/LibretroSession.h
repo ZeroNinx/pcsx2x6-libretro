@@ -51,9 +51,20 @@ namespace LibretroSession
 		float aspect_ratio = 0.0f;
 	};
 
-	/// Creates the CPU thread if needed and boots the VM. Returns after the boot either
-	/// succeeded or was completely unwound.
-	bool Start(VMBootParameters boot_params, Error* error);
+	/// Creates the CPU thread if needed and keeps the boot parameters for Start(); nothing is
+	/// booted yet. Stop() discards parameters that were never started.
+	bool Prepare(VMBootParameters boot_params, Error* error);
+
+	/// Opens the GS on the CPU thread before the VM boots, so that the GS device exists while
+	/// the frontend sets up the graphics context it shares. Returns once the GS opened or failed.
+	bool OpenGS(Error* error);
+
+	/// Boots the prepared VM. Returns after the boot either succeeded or was completely unwound.
+	bool Start(Error* error);
+
+	/// Closes the GS opened by OpenGS(). Only valid while no VM session is active; does nothing
+	/// when the GS is not open.
+	void CloseGS();
 
 	/// Requests one frame with the given input: the VM advances to its next vsync and no
 	/// further. Returns once that frame has been completed and published: true when the VM
@@ -79,10 +90,11 @@ namespace LibretroSession
 	/// completion contributes exactly the frames SPU2 had committed by its vsync.
 	void TakeAudio(LibretroAudio::Samples* samples);
 
-	/// Stops the active VM, if any, and waits until it has shut down.
+	/// Stops the active VM, if any, and waits until it has shut down. Discards prepared boot
+	/// parameters; the GS stays open until CloseGS().
 	void Stop();
 
-	/// Stops the VM and ends the CPU thread.
+	/// Stops the VM, closes the GS and ends the CPU thread.
 	void Shutdown();
 
 	/// Returns true if a VM session is active.

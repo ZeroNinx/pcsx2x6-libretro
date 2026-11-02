@@ -6,6 +6,7 @@
 #include "LibretroHost.h"
 #include "LibretroInput.h"
 #include "LibretroSession.h"
+#include "LibretroVulkan.h"
 #include "libretro.h"
 
 #include "VMManager.h"
@@ -18,6 +19,7 @@
 #include <array>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -50,8 +52,6 @@ namespace
 	LibretroSession::Frame s_presented_frame;
 	// The audio of the frames completed by the current retro_run.
 	LibretroAudio::Samples s_frame_audio;
-	// Presented while the session has not delivered a frame yet, at the initial geometry.
-	std::array<u32, INITIAL_WIDTH * INITIAL_HEIGHT> s_black_frame = {};
 
 	// The AV information the frontend has accepted for the current content. It starts from the
 	// initial values with each content, and only a successful update changes it.
@@ -59,6 +59,14 @@ namespace
 	// The last update the frontend rejected, so the same rejection is reported only once.
 	retro_system_av_info s_rejected_av = {};
 	bool s_update_rejected = false;
+
+	// Whether the frontend repeats the previous frame when given none.
+	bool s_can_dupe = false;
+	bool s_missing_dupe_reported = false;
+
+	// Set when the frontend's context goes away while the VM runs. RetroArch also destroys its
+	// context right before retro_unload_game, so only a later retro_run reveals a lost session.
+	bool s_context_lost = false;
 } // namespace
 
 void retro_set_environment(retro_environment_t cb)
@@ -158,6 +166,43 @@ void retro_deinit(void)
 	s_initialized = false;
 }
 
+// Frontend thread, from context_reset: boots the prepared VM on the frontend's Vulkan context.
+static void ContextFailed(const char* reason);
+static bool ContextReady()
+{
+	Error error;
+	if (!LibretroSession::Start(&error))
+	{
+		ContextFailed(error.GetDescription().c_str());
+		return false;
+	}
+
+	// The session has parsed the content, so its control layout is known.
+	LibretroInput::DescribeInputs(s_environment);
+	LibretroHost::DrainLogMessages();
+	return true;
+}
+
+// Frontend thread: the content cannot run, although retro_load_game already succeeded. The
+// failure is shown and the frontend is asked to end the session; nothing runs meanwhile.
+static void ContextFailed(const char* reason)
+{
+	LibretroHost::ReportLoadFailure(reason);
+	LibretroSession::Stop();
+	LibretroSession::CloseGS();
+	s_environment(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
+	LibretroHost::DrainLogMessages();
+}
+
+// Frontend thread: the frontend's context is going away; nothing may still run on its device.
+static void ContextLost()
+{
+	s_context_lost = LibretroSession::IsActive();
+	LibretroSession::Stop();
+	LibretroSession::CloseGS();
+	LibretroHost::DrainLogMessages();
+}
+
 bool retro_load_game(const retro_game_info* game)
 {
 	ResetOutputState();
@@ -171,21 +216,26 @@ bool retro_load_game(const retro_game_info* game)
 		return false;
 	}
 
-	retro_pixel_format pixel_format = RETRO_PIXEL_FORMAT_XRGB8888;
-	if (!s_environment(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &pixel_format))
-	{
-		LibretroHost::ReportLoadFailure("The frontend does not support the XRGB8888 pixel format.");
-		return false;
-	}
-
-	if (!LibretroSession::Start(std::move(boot_params), &error))
+	// The GS opens when the frontend creates the Vulkan device, and the VM boots once the
+	// frontend's context is ready, both after this returns.
+	if (!LibretroSession::Prepare(std::move(boot_params), &error))
 	{
 		LibretroHost::ReportLoadFailure(error.GetDescription());
 		return false;
 	}
 
-	// The session has parsed the content, so its control layout is known.
-	LibretroInput::DescribeInputs(s_environment);
+	if (!LibretroVulkan::Register(s_environment, {&ContextReady, &ContextFailed, &ContextLost}))
+	{
+		LibretroSession::Stop();
+		LibretroHost::ReportLoadFailure("This core needs a frontend Vulkan video driver with context negotiation v2.");
+		return false;
+	}
+
+	s_can_dupe = false;
+	if (!s_environment(RETRO_ENVIRONMENT_GET_CAN_DUPE, &s_can_dupe))
+		s_can_dupe = false;
+	s_missing_dupe_reported = false;
+	s_context_lost = false;
 
 	LibretroHost::DrainLogMessages();
 	return true;
@@ -198,7 +248,9 @@ bool retro_load_game_special(unsigned game_type, const retro_game_info* info, si
 
 void retro_unload_game(void)
 {
+	s_context_lost = false;
 	LibretroSession::Stop();
+	LibretroSession::CloseGS();
 	s_presented_frame.pixels.clear();
 	s_frame_audio.data.clear();
 	LibretroAudio::ResetQueue();
@@ -312,6 +364,14 @@ static void AnnounceOutputChanges()
 
 void retro_run(void)
 {
+	// The VM stopped with the frontend's context, and the frontend still runs the content.
+	if (s_context_lost)
+	{
+		s_context_lost = false;
+		ContextFailed("The frontend's Vulkan context was lost; the content has to be loaded again.");
+		return;
+	}
+
 	// A paused VM completes the request without running; the frame it presents again has no
 	// audio, and audio still queued from earlier frames waits until the VM runs again.
 	const bool advanced = LibretroSession::RunFrame(SampleInput());
@@ -321,11 +381,12 @@ void retro_run(void)
 	if (advanced)
 		LibretroSession::TakeAudio(&s_frame_audio);
 	AnnounceOutputChanges();
-	if (s_presented_frame.pixels.empty())
-		s_video_refresh(s_black_frame.data(), INITIAL_WIDTH, INITIAL_HEIGHT, INITIAL_WIDTH * sizeof(u32));
-	else
-		s_video_refresh(s_presented_frame.pixels.data(), s_presented_frame.width, s_presented_frame.height,
-			s_presented_frame.pitch);
+	// A hardware context only takes GPU images, which the session does not deliver yet; until
+	// then the frontend repeats what it shows.
+	if (s_can_dupe)
+		s_video_refresh(nullptr, s_accepted_av.geometry.base_width, s_accepted_av.geometry.base_height, 0);
+	else if (!std::exchange(s_missing_dupe_reported, true))
+		Console.Error("The frontend cannot repeat frames, and no GPU image is delivered yet");
 	if (advanced)
 		LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));
 	LibretroHost::DrainLogMessages();

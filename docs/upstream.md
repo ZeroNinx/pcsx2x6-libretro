@@ -12,7 +12,7 @@ Retained resource and third-party source files match this revision. Emulation so
 
 The root and emulator CMake files define the emulation libraries, the `pcsx2x6_libretro` shared library, and optional unit tests. Multi-ISA compilation is the default so that one core runs across supported CPUs, and MSVC builds use the static CRT.
 
-`libretro/deps/` builds and pins the static libraries the core links. Its revisions match the PCSX2x6 Windows dependency set, except for shaderc, which is pinned to a newer tag with a newer glslang revision as explained in that file. The recipe is adapted from the [PCEE2](https://github.com/WizzardSK/pcee2-libretro) dependency build at `5719627731beb90e379ff1be1223391b7f563b3b`. `libretro/libretro.h` is the libretro API header from the same PCEE2 revision.
+`libretro/deps/` builds and pins the static libraries the core links. Its revisions match the PCSX2x6 Windows dependency set, except for shaderc, which is pinned to a newer tag with a newer glslang revision as explained in that file. The recipe is adapted from the [PCEE2](https://github.com/WizzardSK/pcee2-libretro) dependency build at `5719627731beb90e379ff1be1223391b7f563b3b`. `libretro/libretro.h` and `libretro/libretro_vulkan.h` are the libretro API headers from the same PCEE2 revision, with their original notices preserved.
 
 ## Resources and notices
 
@@ -36,6 +36,7 @@ The first nine changes make the emulator safe to load, restart, and unload insid
 | Arcade startup failures name the file involved: a missing or unreadable media image, a missing dongle or save card, with the full path of the expected file | `pcsx2/DEV9/ACATA_IO.cpp`, `pcsx2/VMManager.cpp` |
 | A disabled input source is created without being initialized, instead of being initialized once and shut down again | `pcsx2/Input/InputManager.cpp` |
 | SPU2 can create its output stream through a factory set by the host, and `AudioStream` subclasses can read how many frames are buffered | `pcsx2/SPU2/spu2.h`, `pcsx2/SPU2/spu2.cpp`, `pcsx2/Host/AudioStream.h` |
+| The Vulkan GS can use a host-owned instance and negotiated device, load functions through the host resolver, serialize graphics-queue access and disable the spin queue; failed negotiation releases objects not handed to the host | `pcsx2/GS/Renderers/Vulkan/GSDeviceVK.h`, `pcsx2/GS/Renderers/Vulkan/GSDeviceVK.cpp`, `pcsx2/GS/Renderers/Vulkan/VKLoader.h`, `pcsx2/GS/Renderers/Vulkan/VKLoader.cpp` |
 | A GS-thread query reports the display aspect ratio of the current output, from the aspect ratio setting and video mode | `pcsx2/GS/GS.h`, `pcsx2/GS/GS.cpp`, `pcsx2/GS/Renderers/Common/GSRenderer.h`, `pcsx2/GS/Renderers/Common/GSRenderer.cpp` |
 | An optional boot parameter keeps arcade SRAM in `<directory>/<gameid>/sram.bin`, seeded from the manifest's image when no save exists; startup rejects a save location that is the source location. File identity comparison is shared through `FileSystem::IsSamePath` | `pcsx2/VMManager.h`, `pcsx2/VMManager.cpp`, `pcsx2/DEV9/ACSRAM.h`, `pcsx2/DEV9/ACSRAM.cpp`, `common/FileSystem.h`, `common/FileSystem.cpp` |
 | An optional dongle directory separates slot-1 firmware from save cards; absolute memory-card filenames are respected. Startup can load folder settings without creating unused directories | `pcsx2/VMManager.h`, `pcsx2/VMManager.cpp`, `pcsx2/Pcsx2Config.cpp` |

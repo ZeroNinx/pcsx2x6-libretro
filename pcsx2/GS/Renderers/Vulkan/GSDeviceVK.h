@@ -58,6 +58,39 @@ public:
 	__fi u32 GetPresentQueueFamilyIndex() const { return m_present_queue_family_index; }
 	__fi const VkPhysicalDeviceProperties& GetDeviceProperties() const { return m_device_properties; }
 	__fi const OptionalExtensions& GetOptionalExtensions() const { return m_optional_extensions; }
+	__fi VkQueue GetGraphicsQueue() const { return m_graphics_queue; }
+
+	/// A Vulkan instance and device that a host application owns and shares with the GS. The
+	/// host creates the instance, provides the device, serializes use of the graphics queue
+	/// and destroys both; the GS creates and destroys only its own objects on them.
+	struct ExternalContext
+	{
+		/// The host's loader entry point; every Vulkan function is loaded through it.
+		PFN_vkGetInstanceProcAddr get_instance_proc_addr = nullptr;
+		VkInstance instance = VK_NULL_HANDLE;
+		/// The optional instance extensions enabled when the instance was created.
+		OptionalExtensions instance_extensions = {};
+		/// The physical device to use; null lets the GS choose one.
+		VkPhysicalDevice physical_device = VK_NULL_HANDLE;
+		/// Creates the device with the host's requirements added. Only set while the host
+		/// asks the GS to open, as it may refer to data valid only during that request.
+		std::function<VkDevice(VkPhysicalDevice, const VkDeviceCreateInfo&)> create_device;
+		/// Set by the host once it has taken the created device. Until then the GS destroys the
+		/// device with itself, as the host would never learn of it.
+		bool device_handed_over = false;
+		/// Held around every use of the shared graphics queue.
+		std::function<void()> lock_queue;
+		std::function<void()> unlock_queue;
+	};
+
+	/// Makes the next GS device use the host's context, or a device of its own when null. The
+	/// context must outlive that device. Only valid while no GS device exists.
+	static void SetExternalContext(const ExternalContext* context);
+
+	/// Creates an instance with the extensions the GS needs, for a host that owns the instance.
+	/// `create_instance` adds the host's own requirements and creates it.
+	static VkInstance CreateExternalInstance(PFN_vkGetInstanceProcAddr get_instance_proc_addr,
+		const std::function<VkInstance(const VkInstanceCreateInfo&)>& create_instance, OptionalExtensions* oe);
 
 	// The interaction between raster order attachment access and fbfetch is unclear.
 	__fi bool UseFeedbackLoopLayout() const
@@ -135,9 +168,10 @@ public:
 	void WaitForGPUIdle();
 
 private:
-	// Helper method to create a Vulkan instance.
+	// Helper method to create a Vulkan instance. Without `create_instance`, vkCreateInstance creates it.
 	static VkInstance CreateVulkanInstance(const WindowInfo& wi, OptionalExtensions* oe, bool enable_debug_utils,
-		bool enable_validation_layer);
+		bool enable_validation_layer,
+		const std::function<VkInstance(const VkInstanceCreateInfo&)>& create_instance = {});
 
 	// Enable/disable debug message runtime.
 	bool EnableDebugUtils();
@@ -248,6 +282,9 @@ private:
 	VkQueue m_present_queue = VK_NULL_HANDLE;
 	u32 m_graphics_queue_family_index = 0;
 	u32 m_present_queue_family_index = 0;
+
+	// The host context this device runs on, if any; fixed for the device's lifetime.
+	const ExternalContext* m_external_context = nullptr;
 
 	ReadbackSpinManager m_spin_manager;
 	VkQueue m_spin_queue = VK_NULL_HANDLE;

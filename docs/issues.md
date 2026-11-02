@@ -1,12 +1,13 @@
 # Known Issues
 
-These issues remain open while core integration proceeds. They are outside the accepted M3 integration scope and do not block later milestones. A working mapping or completed reset request does not establish full input or emulator-reset correctness.
+Open compatibility issues include emulator defects and frontend integration limitations. Their scope and follow-up are listed below; a working input mapping or completed reset request does not establish full input or emulator-reset correctness.
 
 | ID | Issue | Status | Follow-up |
 | --- | --- | --- | --- |
 | ISSUE-001 | Missed drum hits in fast charts | Reported in both the core and standalone PCSX2x6; cause unresolved | Deferred behind performance work; input comparison with paraLLEl-PS2 |
 | ISSUE-002 | Reset failure after arcade execution | Also reproducible in standalone PCSX2x6; upstream defect unresolved | Separate emulator reset investigation |
 | ISSUE-003 | Excess audio after resetting a running VM | Observed in the core; suspected SPU2 timing cause unverified | Investigate with ISSUE-002 |
+| ISSUE-004 | Switching fullscreen ends the content session | Experimental direct Vulkan-image path; the v0.1 release software-video path is unaffected | Context lifetime and caching compatibility before baseline replacement |
 
 ## ISSUE-001: Missed drum hits in fast charts
 
@@ -29,3 +30,9 @@ After a VM has executed, its first frame following reset can contain more audio 
 A possible cause is SPU2 clock state: `SPU2::Reset()` does not synchronize `lClocks` with the IOP cycle counter as `SPU2::Open()` does. This may trigger catch-up mixing after the IOP counter resets. That explanation is based on source analysis and has not been confirmed by tracing the clocks; the matching reset code in PCSX2 does not establish an independently reproduced PCSX2 bug.
 
 The excess remains within the bounded frontend queue. Its audibility and sample contents are not established. Investigate it with ISSUE-002; the libretro layer does not trim or compensate for it as a workaround.
+
+## ISSUE-004: Switching fullscreen ends the content session
+
+In the experimental direct Vulkan-image path, switching fullscreen in RetroArch can recreate the video driver and destroy the shared context. The core stops the VM, releases its GS resources and asks the frontend to close the content. The lost session is reported once; the core does not continue presenting images or audio from the invalid context.
+
+Choose the display mode before loading content and keep it unchanged during the session. Supporting a fullscreen transition without ending content requires separate validation of frontend interface lifetime, queue identity and queue access between frames. Enabling `cache_context` alone does not establish that support. This limitation is accepted for the fixed-display performance prototype and remains a compatibility task before replacing the functional baseline.

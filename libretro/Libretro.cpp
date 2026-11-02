@@ -65,8 +65,13 @@ namespace
 	bool s_missing_dupe_reported = false;
 
 	// Set when the frontend's context goes away while the VM runs. RetroArch also destroys its
-	// context right before retro_unload_game, so only a later retro_run reveals a lost session.
+	// context right before retro_unload_game, so only a later retro_run, or a context_reset
+	// within the same session, reveals a lost session.
 	bool s_context_lost = false;
+
+	// Set once a failure of the loaded content has been reported, so that one failure is
+	// reported once however many callbacks observe it.
+	bool s_session_failed = false;
 } // namespace
 
 void retro_set_environment(retro_environment_t cb)
@@ -169,6 +174,14 @@ void retro_deinit(void)
 static void ContextFailed(const char* reason);
 static bool ContextReady()
 {
+	// A context created again after the session lost its context cannot boot the VM again: the
+	// boot parameters were consumed when it first started.
+	if (s_context_lost)
+	{
+		ContextFailed(nullptr);
+		return false;
+	}
+
 	Error error;
 	if (!LibretroSession::Start(&error))
 	{
@@ -183,13 +196,19 @@ static bool ContextReady()
 }
 
 // Frontend thread: the content cannot run, although retro_load_game already succeeded. The
-// failure is shown and the frontend is asked to end the session; nothing runs meanwhile.
+// failure is shown once and the frontend is asked to end the session; nothing runs meanwhile.
+// A lost context explains whatever follows from it, so it is reported instead of `reason`.
 static void ContextFailed(const char* reason)
 {
-	LibretroHost::ReportLoadFailure(reason);
 	LibretroSession::Stop();
 	LibretroSession::CloseGS();
-	s_environment(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
+	if (!std::exchange(s_session_failed, true))
+	{
+		LibretroHost::ReportLoadFailure(s_context_lost ?
+				"The frontend's Vulkan context was lost; the content has to be loaded again." : reason);
+		s_environment(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
+	}
+	s_context_lost = false;
 	LibretroHost::DrainLogMessages();
 }
 
@@ -235,6 +254,7 @@ bool retro_load_game(const retro_game_info* game)
 		s_can_dupe = false;
 	s_missing_dupe_reported = false;
 	s_context_lost = false;
+	s_session_failed = false;
 
 	LibretroHost::DrainLogMessages();
 	return true;
@@ -248,6 +268,7 @@ bool retro_load_game_special(unsigned game_type, const retro_game_info* info, si
 void retro_unload_game(void)
 {
 	s_context_lost = false;
+	s_session_failed = false;
 	LibretroSession::Stop();
 	LibretroSession::CloseGS();
 	s_presented_frame = {};
@@ -388,11 +409,14 @@ static void PresentFrame(bool new_frame)
 
 void retro_run(void)
 {
+	// After a reported failure nothing runs until the frontend ends the session.
+	if (s_session_failed)
+		return;
+
 	// The VM stopped with the frontend's context, and the frontend still runs the content.
 	if (s_context_lost)
 	{
-		s_context_lost = false;
-		ContextFailed("The frontend's Vulkan context was lost; the content has to be loaded again.");
+		ContextFailed(nullptr);
 		return;
 	}
 
@@ -425,6 +449,16 @@ void retro_run(void)
 	if (advanced)
 		LibretroSession::TakeAudio(&s_frame_audio);
 	AnnounceOutputChanges();
+
+	// An AV update can make the frontend recreate its video driver within this call, which
+	// destroys the context the frame was drawn on; nothing of the frame is delivered then.
+	if (s_context_lost || s_session_failed)
+	{
+		if (s_context_lost)
+			ContextFailed(nullptr);
+		return;
+	}
+
 	PresentFrame(new_frame);
 	if (advanced)
 		LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));

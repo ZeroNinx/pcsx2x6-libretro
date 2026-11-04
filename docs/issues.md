@@ -7,7 +7,7 @@ Open compatibility issues include emulator defects and frontend integration limi
 | ISSUE-001 | Missed drum hits in fast charts | Reported in both the core and standalone PCSX2x6; cause unresolved | Deferred behind performance work; input comparison with paraLLEl-PS2 |
 | ISSUE-002 | Reset failure after arcade execution | Also reproducible in standalone PCSX2x6; upstream defect unresolved | Separate emulator reset investigation |
 | ISSUE-003 | Excess audio after resetting a running VM | Observed in the core; suspected SPU2 timing cause unverified | Investigate with ISSUE-002 |
-| ISSUE-004 | Switching fullscreen ends the content session | Same-device video-driver recreation is supported; device or queue changes still end content | Remaining context and reload regressions before baseline replacement |
+| ISSUE-004 | Video-driver recreation on another device or queue ends the content session | Fullscreen switching and other recreation preserving the device and graphics queue keep the session; a different device or queue still ends content | None planned; recovery onto another device is unsupported |
 
 ## ISSUE-001: Missed drum hits in fast charts
 
@@ -31,8 +31,8 @@ A possible cause is SPU2 clock state: `SPU2::Reset()` does not synchronize `lClo
 
 The excess remains within the bounded frontend queue. Its audibility and sample contents are not established. Investigate it with ISSUE-002; the libretro layer does not trim or compensate for it as a workaround.
 
-## ISSUE-004: Switching fullscreen ends the content session
+## ISSUE-004: Video-driver recreation on another device or queue ends the content session
 
 The direct Vulkan-image path requests context caching and refreshes the frontend render interface at frame boundaries. When a video-driver recreation preserves the device and graphics queue, the VM continues and the latest valid image is handed to the new driver, including while the VM is paused.
 
-If the context is destroyed or the replacement interface cannot use the GS device and queue, the core ends the session and reports the failure once. Recovery onto a different device or queue is unsupported. The remaining context and close/reopen regressions must pass before the hardware-video implementation replaces the functional baseline.
+If the context is destroyed or the replacement interface cannot use the GS device and queue, the core ends the session and reports the failure once. Recovery onto a different device or queue is unsupported. The fullscreen-switch case this issue was opened for is resolved in RetroArch.

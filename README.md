@@ -4,7 +4,11 @@ A libretro core project for PCSX2x6's NAMCO System 246 and System 256 arcade emu
 
 ## Status
 
-Version 0.1 is an experimental Windows x86-64 core. It runs arcade VMs using Vulkan and presents video at the GS output dimensions and display aspect ratio. Stereo audio output and two-player RetroPad input for JVS fighting layouts and basic digital drum controls are connected. A Vulkan-capable graphics driver is required even when RetroArch uses another video driver.
+This is an experimental Windows x86-64 core. It runs arcade VMs on Vulkan and hands each frame to the frontend as a Vulkan image, at the GS output dimensions and display aspect ratio. Stereo audio output and two-player RetroPad input for JVS fighting layouts and basic digital drum controls are connected.
+
+## Requirements
+
+The frontend must provide a Vulkan video driver that supports libretro Vulkan context negotiation version 2; there is no software video fallback. RetroArch 1.22.2 switches to its Vulkan driver when this core is loaded, whatever video driver is configured. A frontend without Vulkan context negotiation version 2 cannot load the core.
 
 See the [known issues](docs/issues.md), [development roadmap](docs/roadmap.md), [M1 integration plan](docs/M1.md), and [upstream sources](docs/upstream.md).
 

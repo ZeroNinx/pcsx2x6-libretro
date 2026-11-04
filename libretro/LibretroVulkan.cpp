@@ -33,6 +33,15 @@ namespace
 	const retro_hw_render_interface_vulkan* s_interface = nullptr;
 	bool s_early_queue_use_reported = false;
 
+	// The address of the interface in use and the handle read from it when it was taken over.
+	// A recreated video driver frees the old interface, so only these copies are compared.
+	const void* s_interface_address = nullptr;
+	void* s_interface_handle = nullptr;
+
+	// Set when the frontend replaced its interface with one the GS cannot use. The frontend no
+	// longer submits to the GS queue then, so the GS uses it without the frontend's lock.
+	bool s_interface_retired = false;
+
 	// Set while a frontend callback waits for the GS: the frontend is blocked in that call, so
 	// the GS may use the queue without the frontend's lock, which may not exist yet.
 	std::atomic<bool> s_frontend_blocked{false};
@@ -50,7 +59,8 @@ static void LockQueue()
 	s_interface_mutex.lock();
 	if (s_interface)
 		s_interface->lock_queue(s_interface->handle);
-	else if (!s_frontend_blocked.load(std::memory_order_acquire) && !std::exchange(s_early_queue_use_reported, true))
+	else if (!s_interface_retired && !s_frontend_blocked.load(std::memory_order_acquire) &&
+			 !std::exchange(s_early_queue_use_reported, true))
 		Console.Error("The GS used the shared graphics queue while the frontend's context was not ready");
 }
 
@@ -65,7 +75,21 @@ static void SetInterface(const retro_hw_render_interface_vulkan* iface)
 {
 	std::unique_lock lock(s_interface_mutex);
 	s_interface = iface;
+	s_interface_address = iface;
+	s_interface_handle = iface ? iface->handle : nullptr;
+	s_interface_retired = false;
 	s_early_queue_use_reported = false;
+}
+
+// Frontend thread: stops using an interface the frontend has replaced with one the GS cannot
+// work with, so that closing the GS does not go through the freed interface.
+static void RetireInterface()
+{
+	std::unique_lock lock(s_interface_mutex);
+	s_interface = nullptr;
+	s_interface_address = nullptr;
+	s_interface_handle = nullptr;
+	s_interface_retired = true;
 }
 
 static const VkApplicationInfo* GetApplicationInfo()
@@ -226,6 +250,10 @@ bool LibretroVulkan::Register(retro_environment_t environment, const ContextCall
 	hw_render.version_minor = 1;
 	hw_render.context_reset = &ContextReset;
 	hw_render.context_destroy = &ContextDestroy;
+	// When the frontend recreates its video driver, for instance to switch to full screen, it
+	// keeps the instance and the device instead of destroying them with the context. The GS
+	// then continues on the same device and only takes over the new driver's interface.
+	hw_render.cache_context = true;
 	if (!environment(RETRO_ENVIRONMENT_SET_HW_RENDER, &hw_render))
 	{
 		Console.Error("The frontend cannot provide a Vulkan context");
@@ -255,6 +283,51 @@ const retro_hw_render_interface_vulkan* LibretroVulkan::GetInterface()
 {
 	std::unique_lock lock(s_interface_mutex);
 	return s_interface;
+}
+
+LibretroVulkan::InterfaceState LibretroVulkan::RefreshInterface()
+{
+	const retro_hw_render_interface_vulkan* iface = nullptr;
+	if (!s_environment(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, &iface) || !iface)
+	{
+		Console.Error("The frontend no longer provides its Vulkan render interface");
+		RetireInterface();
+		return InterfaceState::Invalid;
+	}
+
+	// Only the common header is read until it shows the Vulkan interface layout this core knows.
+	if (iface->interface_type != RETRO_HW_RENDER_INTERFACE_VULKAN ||
+		iface->interface_version != RETRO_HW_RENDER_INTERFACE_VULKAN_VERSION)
+	{
+		Console.ErrorFmt("The frontend recreated its video driver with a render interface of type {} version {}",
+			static_cast<int>(iface->interface_type), iface->interface_version);
+		RetireInterface();
+		return InterfaceState::Invalid;
+	}
+
+	// The driver must share the GS device and present from the queue the GS uses. A recreated
+	// driver can be allocated where the old one was, so the interface is checked every time.
+	const GSDeviceVK* const device = GSDeviceVK::GetInstance();
+	if (!device || iface->device != device->GetDevice() || iface->queue != device->GetGraphicsQueue() ||
+		iface->queue_index != device->GetGraphicsQueueFamilyIndex())
+	{
+		Console.ErrorFmt("The frontend recreated its video driver with a different device or queue (queue family {}, GS "
+						 "queue family {})",
+			iface->queue_index, device ? device->GetGraphicsQueueFamilyIndex() : 0u);
+		RetireInterface();
+		return InterfaceState::Invalid;
+	}
+
+	// Only the interface just returned is read; the one in use may already be freed.
+	{
+		std::unique_lock lock(s_interface_mutex);
+		if (iface == s_interface_address && iface->handle == s_interface_handle)
+			return InterfaceState::Current;
+	}
+
+	SetInterface(iface);
+	Console.WriteLn("The frontend recreated its video driver; the GS continues on the same Vulkan device");
+	return InterfaceState::Replaced;
 }
 
 namespace

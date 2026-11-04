@@ -33,6 +33,23 @@ namespace LibretroVulkan
 	/// Frontend thread: the frontend's Vulkan interface while its context is ready; null otherwise.
 	const retro_hw_render_interface_vulkan* GetInterface();
 
+	enum class InterfaceState
+	{
+		/// The frontend still uses the interface the GS has.
+		Current,
+		/// The frontend recreated its video driver around the same device and queue; the GS
+		/// now uses the new interface.
+		Replaced,
+		/// The frontend's interface cannot be used: it is missing, or uses another device or
+		/// queue. The GS no longer uses the frontend's queue lock; the session must end.
+		Invalid,
+	};
+
+	/// Frontend thread, between frames while the GS is idle: takes over the interface of a video
+	/// driver the frontend recreated. The frontend keeps its context in that case and calls no
+	/// context callback, so this is the only place the change shows.
+	InterfaceState RefreshInterface();
+
 	/// Frontend thread, before each frame request: waits as the frontend requires for its current
 	/// sync index and returns it. The frame is drawn into the output slot of that index.
 	u32 AcquireOutputSlot();

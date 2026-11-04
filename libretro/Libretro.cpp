@@ -60,9 +60,8 @@ namespace
 	retro_system_av_info s_rejected_av = {};
 	bool s_update_rejected = false;
 
-	// Whether the frontend repeats the previous frame when given none.
-	bool s_can_dupe = false;
-	bool s_missing_dupe_reported = false;
+	// Set once a frame request has found no image to present, so it is reported only once.
+	bool s_missing_image_reported = false;
 
 	// Set when the frontend's context goes away while the VM runs. RetroArch also destroys its
 	// context right before retro_unload_game, so only a later retro_run, or a context_reset
@@ -249,10 +248,7 @@ bool retro_load_game(const retro_game_info* game)
 		return false;
 	}
 
-	s_can_dupe = false;
-	if (!s_environment(RETRO_ENVIRONMENT_GET_CAN_DUPE, &s_can_dupe))
-		s_can_dupe = false;
-	s_missing_dupe_reported = false;
+	s_missing_image_reported = false;
 	s_context_lost = false;
 	s_session_failed = false;
 
@@ -383,28 +379,31 @@ static void AnnounceOutputChanges()
 	s_update_rejected = true;
 }
 
-// Hands the latest frame to the frontend. Without a new one, the frontend repeats the previous
-// image, or is given the previous image again when it cannot repeat frames itself.
-static void PresentFrame(bool new_frame)
+// Hands the latest image to the frontend, the previous one again when the frame has no new
+// one. The frontend is never asked to repeat a frame itself: a video driver it recreated in
+// between has no frame to repeat, and it may be recreated without the interface changing.
+static void PresentFrame()
 {
-	if (new_frame)
+	if (s_presented_frame.width == 0)
 	{
-		LibretroVulkan::SetOutputImage(s_presented_frame.slot);
-		s_video_refresh(RETRO_HW_FRAME_BUFFER_VALID, s_presented_frame.width, s_presented_frame.height, 0);
+		if (!std::exchange(s_missing_image_reported, true))
+			Console.Error("A frame request ended without an image to present");
+		return;
 	}
-	else if (s_can_dupe)
-	{
-		s_video_refresh(nullptr, s_presented_frame.width, s_presented_frame.height, 0);
-	}
-	else if (s_presented_frame.width != 0)
-	{
-		LibretroVulkan::SetOutputImage(s_presented_frame.slot);
-		s_video_refresh(RETRO_HW_FRAME_BUFFER_VALID, s_presented_frame.width, s_presented_frame.height, 0);
-	}
-	else if (!std::exchange(s_missing_dupe_reported, true))
-	{
-		Console.Error("The frontend cannot repeat frames, and there is no image to present yet");
-	}
+
+	LibretroVulkan::SetOutputImage(s_presented_frame.slot);
+	s_video_refresh(RETRO_HW_FRAME_BUFFER_VALID, s_presented_frame.width, s_presented_frame.height, 0);
+}
+
+// Frontend thread, between frames: takes over the interface of a video driver the frontend
+// recreated around the same device, or ends the session when that interface cannot be used.
+static bool RefreshFrontendInterface()
+{
+	if (LibretroVulkan::RefreshInterface() != LibretroVulkan::InterfaceState::Invalid)
+		return true;
+
+	ContextFailed("The frontend recreated its video driver in a way the GS cannot continue on; the content has to be loaded again.");
+	return false;
 }
 
 void retro_run(void)
@@ -420,6 +419,11 @@ void retro_run(void)
 		return;
 	}
 
+	// A video driver recreated since the previous frame, for instance when switching to full
+	// screen, keeps the device but brings its own interface.
+	if (!RefreshFrontendInterface())
+		return;
+
 	if (LibretroVulkan::OutputFailed())
 	{
 		ContextFailed("An output image could not be created on the frontend's Vulkan device.");
@@ -432,12 +436,12 @@ void retro_run(void)
 	const u32 output_slot = LibretroVulkan::AcquireOutputSlot();
 	const bool advanced = LibretroSession::RunFrame(SampleInput(), output_slot);
 
-	bool new_frame = LibretroSession::TakeFrame(&s_presented_frame);
+	const bool new_frame = LibretroSession::TakeFrame(&s_presented_frame);
 
 	// Nothing has been shown since the content started or was reset, and the VM drew nothing,
 	// for instance while it is paused: black is shown instead.
 	if (!new_frame && s_presented_frame.width == 0 && !LibretroVulkan::OutputFailed())
-		new_frame = LibretroSession::DrawBlackFrame(output_slot, &s_presented_frame);
+		LibretroSession::DrawBlackFrame(output_slot, &s_presented_frame);
 
 	// An output image that could not be prepared ends the session before anything is presented.
 	if (LibretroVulkan::OutputFailed())
@@ -450,16 +454,19 @@ void retro_run(void)
 		LibretroSession::TakeAudio(&s_frame_audio);
 	AnnounceOutputChanges();
 
-	// An AV update can make the frontend recreate its video driver within this call, which
-	// destroys the context the frame was drawn on; nothing of the frame is delivered then.
+	// An AV update can make the frontend recreate its video driver within this call. When it
+	// keeps the device, the frame goes to the new driver; when it destroyed the context the
+	// frame was drawn on, nothing of the frame is delivered.
 	if (s_context_lost || s_session_failed)
 	{
 		if (s_context_lost)
 			ContextFailed(nullptr);
 		return;
 	}
+	if (!RefreshFrontendInterface())
+		return;
 
-	PresentFrame(new_frame);
+	PresentFrame();
 	if (advanced)
 		LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));
 	LibretroHost::DrainLogMessages();

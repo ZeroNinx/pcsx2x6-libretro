@@ -8,6 +8,7 @@ Open compatibility issues include emulator defects and frontend integration limi
 | ISSUE-002 | Reset failure after arcade execution | Also reproducible in standalone PCSX2x6; upstream defect unresolved | Separate emulator reset investigation |
 | ISSUE-003 | Excess audio after resetting a running VM | Observed in the core; suspected SPU2 timing cause unverified | Investigate with ISSUE-002 |
 | ISSUE-004 | Video-driver recreation on another device or queue ends the content session | Fullscreen switching and other recreation preserving the device and graphics queue keep the session; a different device or queue still ends content | None planned; recovery onto another device is unsupported |
+| ISSUE-005 | Higher CPU power with RTSS frame limiting | Reported on handheld hardware; the hardware power-response mechanism remains unconfirmed | Set the RTSS frame limit for RetroArch to 0; recheck after performance work |
 
 ## ISSUE-001: Missed drum hits in fast charts
 
@@ -36,3 +37,13 @@ The excess remains within the bounded frontend queue. Its audibility and sample 
 The direct Vulkan-image path requests context caching and refreshes the frontend render interface at frame boundaries. When a video-driver recreation preserves the device and graphics queue, the VM continues and the latest valid image is handed to the new driver, including while the VM is paused.
 
 If the context is destroyed or the replacement interface cannot use the GS device and queue, the core ends the session and reports the failure once. Recovery onto a different device or queue is unsupported. The fullscreen-switch case this issue was opened for is resolved in RetroArch.
+
+## ISSUE-005: Higher CPU power with RTSS frame limiting
+
+On some handheld systems, enabling RivaTuner Statistics Server (RTSS) frame limiting at 60 frames per second can considerably increase CPU and system power with this core while frame rate and emulation speed remain normal. The size of the increase can differ between cores and workloads.
+
+RTSS deadline waiting adds CPU execution in the frontend's presentation path. A resulting change in processor power state is a possible explanation for the power increase, not a confirmed cause. Voltage and hardware idle-state residency have not been measured, and no core-side busy-wait defect has been identified in the reviewed Vulkan path.
+
+**Workaround:** set the RTSS frame limit for RetroArch to **0**. With vertical sync and audio sync enabled, RetroArch already paces this core at the content frame rate. RTSS can remain running for its other functions, such as its overlay.
+
+Reducing the core's CPU load may reduce the effect, but this is unconfirmed. Recheck the limit-0 versus limit-60 behavior after performance changes.

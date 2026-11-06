@@ -1,6 +1,6 @@
 # Development Roadmap
 
-This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1, M2 and [M3](M3.md) are complete; [M4](M4.md) is in progress, with ownership analysis and measurement complete.
+This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1, M2, [M3](M3.md) and [M4](M4.md) are complete; [M5](M5.md) workstreams are selected individually.
 
 ## Objective and initial scope
 
@@ -105,7 +105,7 @@ Scope includes frame delivery and geometry, actual VM refresh rate, sample-rate 
 
 Compare relevant changes against PCSX2 ancestry and the selected x6 implementation: host/pacing, CPU/VU execution, SPU2, renderer transfers and presentation, notifications and waits. Verify the effective configuration before attributing a difference to code. Different board clocks, audio rates, content or output quality do not define an equivalent workload.
 
-The [M4 plan](M4.md) preserves the completed ownership analysis and frame-cost measurements, then prioritizes applicable performance changes and matched measurements. High-speed input investigation is deferred behind performance work. GS consumer placement and hardware-image delivery remain separate decisions with separately scoped implementations.
+[M4](M4.md) retains GPU-image delivery with an independent GS worker and records a decision for each selected experiment. High-speed input investigation remains deferred.
 
 Use bounded, repeatable windows at the same checkpoint and settings. Measure uncapped throughput and frame-time tails separately from normally paced CPU/GPU work. For power comparisons, distinguish the configured limit, measured package power and whole-device discharge, excluding loading and unpaced preparation. Preserve emulation progress, audio correctness and output quality in every comparison.
 

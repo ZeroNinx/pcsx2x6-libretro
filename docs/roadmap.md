@@ -1,6 +1,6 @@
 # Development Roadmap
 
-This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1, M2, [M3](M3.md) and [M4](M4.md) are complete; [M5](M5.md) workstreams are selected individually.
+This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1, M2, [M3](M3.md) and [M4](M4.md) are complete; [M5](M5.md) has completed its capability audit and save-state design, prioritizing core features before optional compatibility and performance work.
 
 ## Objective and initial scope
 
@@ -19,7 +19,7 @@ The emulation source keeps its upstream paths under `pcsx2/` and `common/`, with
 | [M2 — Boot one System246 game](M2.md) | Does the existing arcade boot path survive the new Host? | One System246 title reaches an agreed startup checkpoint |
 | [M3 — Basic video, audio, and input](M3.md) | Does the playable core preserve standalone behavior? | One functional presentation path, audio delivery, JVS input, save-data handling |
 | [M4 — Performance optimization and scheduling](M4.md) | Which changes reduce work and improve real-time headroom? | An applicable LRPS2 change inventory and measured performance decisions |
-| [M5 — Performance and compatibility](M5.md) | Which additional targets and workloads justify further work? | Separately scoped optimization and compatibility improvements |
+| [M5 — Core features and compatibility](M5.md) | What remains for a complete everyday core experience? | Save states, localized options, input and lifecycle coverage, with separately selected compatibility work |
 
 M0 precedes integration. M1 establishes the Host boundary; M2 validates arcade boot; M3 establishes the functional reference for M4 and M5. Limited display or device plumbing may be implemented earlier when required by VM initialization or boot diagnosis.
 
@@ -118,15 +118,15 @@ Use bounded, repeatable windows at the same checkpoint and settings. Measure unc
 
 **Deferred:** wholesale fork migration, broad compatibility work, or energy/latency claims based only on uncapped FPS, source size, CPU utilization or power-limit settings.
 
-## M5 — Performance and compatibility
+## M5 — Core features and compatibility
 
-**Purpose:** expand the working core through independently reviewable improvements.
+**Purpose:** complete the everyday libretro experience while preserving the accepted H1 functional baseline.
 
-Candidate work includes CPU/GS/MTVU efficiency, hardware presentation and graphics backends, System256/Super256 coverage, additional media and games, ARM64, VFS coverage, lightguns, wheels, drums, touch input, and other arcade devices. A successful check of one game does not establish full board coverage. These are candidate workstreams, not a promise that all are required for one release.
+[M5](M5.md) has completed its capability and arcade-state design phase; implementation remains pending. It next develops useful core options with English and Simplified Chinese presentation, supported input layouts, in-memory save states and lifecycle coverage. M5.2 prepares a localized renderer option; M5.5a compares D3D11, D3D12 and OpenGL against the target frontend's actual interfaces before selecting and validating a further hardware backend after the state/lifecycle work, keeping Vulkan as the default. Save states require complete guest/device state, safe worker synchronization, explicit persistence rules and bounded restore validation; connecting the API alone is insufficient. Rewind, runahead and netplay require separate assessment.
 
-Each selected workstream receives its own later TODO and acceptance criteria. Performance work identifies the workload and comparison settings; platform work identifies the architecture and frontend; compatibility work identifies the game/device case and standalone comparison.
+Additional graphics-backend support is selected through M5.5a. The original performance, System256/Super256/media, ARM64, VFS and peripheral candidates remain available. Each needs an identified use case and its own bounded design and acceptance evidence; all are not required for one release. Existing System256 and digital drum support provide limited coverage, not complete board or peripheral compatibility.
 
-**Acceptance principle:** improvements show the claimed benefit on their target case while preserving the relevant functional baseline. Compatibility fixes and performance improvements are evaluated separately when their evidence differs.
+**Acceptance principle:** the selected core features behave correctly in the frontend, preserve persistent data and lifecycle guarantees, and are described truthfully in core metadata and distribution documentation. Performance and compatibility claims retain their own workload-specific acceptance. Deferred save-state or lifecycle requirements require explicit review before milestone completion.
 
 ## Baseline maintenance and future TODOs
 

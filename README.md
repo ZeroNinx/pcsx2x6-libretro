@@ -35,6 +35,8 @@ Some games require the external [PCSX2x6 patches archive](https://github.com/PS2
 
 **Region Check Bypass** defaults to **Enabled** in Core Options. It controls the matching `Region check bypass` patch group; other compatibility patches keep their existing behavior. Close and reopen content after changing it. Enabling the option still requires a matching patch in the external archive; it does not generate a patch for unsupported games.
 
+Core Options are available in English and Simplified Chinese. Besides BIOS Image and Region Check Bypass, they offer **VU1 Thread (MTVU)** (Automatic by default), **Internal Resolution** (Native by default, up to 4x) and **Volume**. Volume applies immediately; the other options take effect when the content is closed and loaded again. Higher internal resolutions need more video memory.
+
 `<save-root>` is `<save>/pcsx2x6` unless RetroArch already supplies a core-specific directory, such as `<save>/PCSX2x6` or `<save>/PCSX2x6/<content>`; that directory is used directly. No second `pcsx2x6` layer is added. The save root contains only per-game SRAM in `arcade/<gameid>/sram.bin` and optional save cards in `memcards/`. Variants sharing a GameID share their SRAM.
 
 BIOS files are loaded directly from `<system>/pcsx2x6/bios/`; their `.nvm`/`.mec` companions retain x6's board-state behavior in that folder. Shader caches go in `<system>/pcsx2x6/cache/`, and `playtime.dat` is kept in `<system>/pcsx2x6/`. The system area must allow these runtime writes. Unused emulator directories are not created. The system and save roots must be separate.

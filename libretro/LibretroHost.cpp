@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "LibretroHost.h"
+#include "LibretroOptions.h"
 #include "LibretroSession.h"
 
 #include "Achievements.h"
@@ -16,6 +17,7 @@
 #include "Input/InputManager.h"
 #include "MTGS.h"
 #include "Patch.h"
+#include "SPU2/spu2.h"
 #include "VMManager.h"
 #include "ps2/BiosTools.h"
 
@@ -43,16 +45,12 @@ namespace
 	constexpr const char* DIRECTORY_NAME = "pcsx2x6";
 	constexpr const char* CONTENT_EXTENSION = "acgame";
 	constexpr const char* ARCADE_SAVE_DIRECTORY_NAME = "arcade";
-	// Output volume in percent.
-	constexpr u32 CORE_VOLUME = 100;
-
-	constexpr const char* BIOS_OPTION_KEY = "pcsx2x6_bios";
-	constexpr const char* BIOS_OPTION_AUTO = "auto";
-	constexpr const char* REGION_BYPASS_OPTION_KEY = "pcsx2x6_region_check_bypass";
 	constexpr const char* REGION_BYPASS_PATCH_NAME = "Region check bypass";
 
 	constexpr size_t MAX_QUEUED_LOG_MESSAGES = 4096;
 	constexpr unsigned ERROR_MESSAGE_FRAMES = 300;
+	constexpr unsigned NOTICE_FRAMES = 300;
+	constexpr unsigned NOTICE_DURATION_MS = 5000;
 
 	struct QueuedLogMessage
 	{
@@ -74,8 +72,17 @@ namespace
 	// the GS has shut down.
 	std::span<const u8> s_font_data;
 
-	std::vector<std::string> s_bios_option_values;
-	retro_core_option_v2_definition s_core_option_definitions[3];
+	// The reload-required options the current content was loaded with.
+	struct LoadedOptions
+	{
+		std::string bios;
+		bool region_bypass = true;
+		LibretroOptions::MtvuSetting mtvu = LibretroOptions::MtvuSetting::Automatic;
+		unsigned upscale_multiplier = 1;
+	};
+	LoadedOptions s_loaded_options;
+	unsigned s_applied_volume = LibretroOptions::DEFAULT_VOLUME;
+	bool s_reload_notice_shown = false;
 } // namespace
 
 // Console.Error() and Console.Warning() log at LOGLEVEL_INFO and carry their
@@ -149,6 +156,50 @@ void LibretroHost::ReportLoadFailure(std::string_view message)
 	s_environment(RETRO_ENVIRONMENT_SET_MESSAGE, &frontend_message);
 }
 
+// Frontend thread: shows a notification. The extended interface carries a priority and a
+// type; frontends without it show the plain message.
+static void ShowNotice(const char* text)
+{
+	unsigned message_version = 0;
+	if (s_environment(RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION, &message_version) && message_version >= 1)
+	{
+		retro_message_ext message{};
+		message.msg = text;
+		message.duration = NOTICE_DURATION_MS;
+		message.priority = 1;
+		message.level = RETRO_LOG_INFO;
+		message.target = RETRO_MESSAGE_TARGET_ALL;
+		message.type = RETRO_MESSAGE_TYPE_NOTIFICATION;
+		message.progress = -1;
+		s_environment(RETRO_ENVIRONMENT_SET_MESSAGE_EXT, &message);
+		return;
+	}
+
+	retro_message message{text, NOTICE_FRAMES};
+	s_environment(RETRO_ENVIRONMENT_SET_MESSAGE, &message);
+}
+
+// CPU thread: applies an output volume without reloading the settings, which would reset
+// running state such as the Test DIP switch. Both SPU2 volumes carry the one core volume;
+// SPU2 keeps a muted output muted and applies the new value when it unmutes.
+static void ApplyVolume(unsigned volume)
+{
+	{
+		const std::unique_lock lock = Host::GetSettingsLock();
+		s_settings.SetUIntValue("SPU2/Output", "StandardVolume", volume);
+		s_settings.SetUIntValue("SPU2/Output", "FastForwardVolume", volume);
+	}
+
+	if (!VMManager::HasValidVM())
+		return;
+
+	const Pcsx2Config old_config(EmuConfig);
+	EmuConfig.SPU2.StandardVolume = volume;
+	EmuConfig.SPU2.FastForwardVolume = volume;
+	SPU2::CheckForConfigChanges(old_config);
+	Console.WriteLnFmt("Output volume set to {}%", volume);
+}
+
 // A frontend may report no directory, or a relative one that would resolve against
 // its own working directory. Neither is a safe place for BIOS data or arcade saves.
 static bool GetFrontendDirectory(unsigned command, const char* description, std::string* directory, Error* error)
@@ -201,43 +252,16 @@ static std::vector<std::string> FindArcadeBiosImages(const std::string& director
 	return images;
 }
 
+// Frontends also call this while probing core information, with an environment that
+// rejects everything. BIOS discovery is repeated when loading content.
 static void RegisterCoreOptions()
 {
-	s_bios_option_values = {BIOS_OPTION_AUTO};
-
+	std::vector<std::string> bios_images;
 	std::string system_directory;
 	if (GetFrontendDirectory(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, "system", &system_directory, nullptr))
-	{
-		for (std::string& name : FindArcadeBiosImages(GetSourceBiosDirectory(system_directory)))
-		{
-			if (s_bios_option_values.size() >= RETRO_NUM_CORE_OPTION_VALUES_MAX - 1)
-				break;
-			s_bios_option_values.emplace_back(std::move(name));
-		}
-	}
+		bios_images = FindArcadeBiosImages(GetSourceBiosDirectory(system_directory));
 
-	std::memset(s_core_option_definitions, 0, sizeof(s_core_option_definitions));
-	retro_core_option_v2_definition& bios_option = s_core_option_definitions[0];
-	bios_option.key = BIOS_OPTION_KEY;
-	bios_option.desc = "BIOS Image";
-	bios_option.info = "Automatic selects the first valid COH-H arcade BIOS in filename order from system/pcsx2x6/bios. Select a specific image to override it; changes apply on the next content load.";
-	bios_option.default_value = BIOS_OPTION_AUTO;
-	bios_option.values[0].label = "Automatic";
-	for (size_t i = 0; i < s_bios_option_values.size(); i++)
-		bios_option.values[i].value = s_bios_option_values[i].c_str();
-
-	retro_core_option_v2_definition& region_option = s_core_option_definitions[1];
-	region_option.key = REGION_BYPASS_OPTION_KEY;
-	region_option.desc = "Region Check Bypass";
-	region_option.info = "Enable the matching Region check bypass patch from system/pcsx2x6/resources/patches.zip. The archive must be supplied separately. Close and reload content after changing this option.";
-	region_option.default_value = "enabled";
-	region_option.values[0] = {"enabled", "Enabled"};
-	region_option.values[1] = {"disabled", "Disabled"};
-
-	// Frontends also call this while probing core information, with an environment
-	// that rejects everything. BIOS discovery is repeated when loading content.
-	retro_core_options_v2 options{nullptr, s_core_option_definitions};
-	s_environment(RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2, &options);
+	LibretroOptions::Register(s_environment, bios_images);
 }
 
 void LibretroHost::SetEnvironment(retro_environment_t environment)
@@ -250,20 +274,11 @@ void LibretroHost::SetEnvironment(retro_environment_t environment)
 	RegisterCoreOptions();
 }
 
-static std::string GetSelectedBios()
-{
-	retro_variable variable{BIOS_OPTION_KEY, nullptr};
-	if (!s_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) || !variable.value)
-		return BIOS_OPTION_AUTO;
-
-	return variable.value;
-}
-
 static bool ResolveBios(const std::string& source_directory, std::string* bios_name, Error* error)
 {
-	*bios_name = GetSelectedBios();
+	*bios_name = s_loaded_options.bios;
 	// Treat the previous default as Automatic when upgrading an existing configuration.
-	if (bios_name->empty() || *bios_name == BIOS_OPTION_AUTO || *bios_name == "none")
+	if (bios_name->empty() || *bios_name == LibretroOptions::BIOS_AUTO || *bios_name == "none")
 	{
 		const std::vector<std::string> images = FindArcadeBiosImages(source_directory);
 		if (images.empty())
@@ -347,7 +362,7 @@ void LibretroHost::ReleaseFonts()
 	s_font_data = {};
 }
 
-static void ApplyCoreSettings(const std::string& bios_name, bool region_bypass)
+static void ApplyCoreSettings(const std::string& bios_name)
 {
 	s_settings.SetStringValue("Filenames", "BIOS", bios_name.c_str());
 	// Only files explicitly requested by the manifest are inserted.
@@ -356,19 +371,23 @@ static void ApplyCoreSettings(const std::string& bios_name, bool region_bypass)
 	// x6 enables named arcade groups by default; use its existing enable/disable lists
 	// so only this group is controlled, without disabling other compatibility patches.
 	s_settings.SetStringList(Patch::PATCHES_CONFIG_SECTION,
-		region_bypass ? Patch::PATCH_ENABLE_CONFIG_KEY : Patch::PATCH_DISABLE_CONFIG_KEY,
+		s_loaded_options.region_bypass ? Patch::PATCH_ENABLE_CONFIG_KEY : Patch::PATCH_DISABLE_CONFIG_KEY,
 		{REGION_BYPASS_PATCH_NAME});
 
 	// The core owns a device without a window, and the frontend paces the session.
 	s_settings.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::VK));
 	s_settings.SetBoolValue("EmuCore/GS", "VsyncEnable", false);
-	// The maximum frame size reported to the frontend assumes native resolution.
-	s_settings.SetFloatValue("EmuCore/GS", "upscale_multiplier", 1.0f);
+	// The maximum frame size reported to the frontend follows the same multiplier.
+	s_settings.SetFloatValue("EmuCore/GS", "upscale_multiplier", static_cast<float>(s_loaded_options.upscale_multiplier));
 	s_settings.SetStringValue("SPU2/Output", "Backend", "Null");
 	// The frontend paces at an unlimited target speed, so SPU2 applies its fast-forward
 	// volume whenever it is unmuted; both volumes carry the one core volume.
-	s_settings.SetUIntValue("SPU2/Output", "StandardVolume", CORE_VOLUME);
-	s_settings.SetUIntValue("SPU2/Output", "FastForwardVolume", CORE_VOLUME);
+	s_settings.SetUIntValue("SPU2/Output", "StandardVolume", s_applied_volume);
+	s_settings.SetUIntValue("SPU2/Output", "FastForwardVolume", s_applied_volume);
+
+	// Automatic keeps the emulator's hardware-dependent default from SetDefaultSettings.
+	if (s_loaded_options.mtvu != LibretroOptions::MtvuSetting::Automatic)
+		s_settings.SetBoolValue("EmuCore/Speedhacks", "vuThread", s_loaded_options.mtvu == LibretroOptions::MtvuSetting::Enabled);
 
 	// Input arrives through the libretro API, never from host devices.
 	for (const char* source : {"SDL", "DInput", "XInput", "RawInput"})
@@ -389,9 +408,6 @@ static void ApplyCoreSettings(const std::string& bios_name, bool region_bypass)
 
 static void LoadCoreSettings(const std::string& bios_name, const std::string& save_directory)
 {
-	retro_variable variable{REGION_BYPASS_OPTION_KEY, nullptr};
-	const bool region_bypass = !s_environment(RETRO_ENVIRONMENT_GET_VARIABLE, &variable) ||
-		!variable.value || std::strcmp(variable.value, "disabled") != 0;
 	{
 		const std::unique_lock lock = Host::GetSettingsLock();
 		if (!Host::Internal::GetBaseSettingsLayer())
@@ -400,7 +416,7 @@ static void LoadCoreSettings(const std::string& bios_name, const std::string& sa
 		// AutoDetectSource edits this layer, so a session starts from the defaults.
 		s_settings.Clear();
 		VMManager::SetDefaultSettings(s_settings, true, true, true, true, true);
-		ApplyCoreSettings(bios_name, region_bypass);
+		ApplyCoreSettings(bios_name);
 		s_settings.SetStringValue("Folders", "MemoryCards", Path::Combine(save_directory, "memcards").c_str());
 	}
 
@@ -456,6 +472,11 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 		return false;
 	}
 
+	s_loaded_options = {LibretroOptions::GetBios(s_environment), LibretroOptions::GetRegionBypass(s_environment),
+		LibretroOptions::GetMtvu(s_environment), LibretroOptions::GetUpscaleMultiplier(s_environment)};
+	s_applied_volume = LibretroOptions::GetVolume(s_environment);
+	s_reload_notice_shown = false;
+
 	const std::string source_bios_directory = GetSourceBiosDirectory(system_directory);
 	std::string bios_name;
 	if (!ResolveBios(source_bios_directory, &bios_name, error))
@@ -503,6 +524,37 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 	boot_params->arcade_save_directory = Path::Combine(save_directory, ARCADE_SAVE_DIRECTORY_NAME);
 	boot_params->arcade_dongle_directory = Path::Combine(system_directory, "memcards");
 	return true;
+}
+
+u32 LibretroHost::GetUpscaleMultiplier()
+{
+	return s_loaded_options.upscale_multiplier;
+}
+
+void LibretroHost::CheckOptionChanges()
+{
+	bool updated = false;
+	if (!s_environment(RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE, &updated) || !updated)
+		return;
+
+	const unsigned volume = LibretroOptions::GetVolume(s_environment);
+	if (volume != s_applied_volume)
+	{
+		s_applied_volume = volume;
+		LibretroSession::RunOnCPUThread([volume]() { ApplyVolume(volume); }, false);
+	}
+
+	// Options that take effect on the next content load are compared with the values this
+	// content was loaded with; a session shows the notice once.
+	const bool reload_changed = LibretroOptions::GetBios(s_environment) != s_loaded_options.bios ||
+		LibretroOptions::GetRegionBypass(s_environment) != s_loaded_options.region_bypass ||
+		LibretroOptions::GetMtvu(s_environment) != s_loaded_options.mtvu ||
+		LibretroOptions::GetUpscaleMultiplier(s_environment) != s_loaded_options.upscale_multiplier;
+	if (reload_changed && !std::exchange(s_reload_notice_shown, true))
+	{
+		Console.WriteLn("Changed core options take effect when the content is loaded again");
+		ShowNotice(LibretroOptions::GetReloadNotice(s_environment));
+	}
 }
 
 void Host::CommitBaseSettingChanges()

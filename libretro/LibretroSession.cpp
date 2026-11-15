@@ -8,6 +8,7 @@
 
 #include "GS.h"
 #include "GS/GS.h"
+#include "GS/Renderers/Common/GSDevice.h"
 #include "MTGS.h"
 #include "VMManager.h"
 
@@ -81,6 +82,9 @@ namespace
 
 	// Boot parameters of the loaded content until Start() boots them.
 	std::optional<VMBootParameters> s_prepared_boot;
+	// Largest frame the loaded content may publish. Set by Prepare() before the session starts,
+	// read by the CPU thread while it runs, and returned to native resolution by Stop().
+	LibretroSession::FrameSize s_max_frame_size = LibretroSession::GetMaxFrameSize(1);
 	std::optional<VMBootParameters> s_boot_request;
 	bool s_boot_done = false;
 	bool s_boot_succeeded = false;
@@ -352,7 +356,8 @@ static bool CaptureFrame(LibretroSession::Frame* frame)
 		return false;
 
 	// The frontend relies on these sizes, so a frame outside them is never published.
-	if (width == 0 || height == 0 || width > MAX_FRAME_WIDTH || height > MAX_FRAME_HEIGHT || !(aspect_ratio > 0.0f))
+	if (width == 0 || height == 0 || width > s_max_frame_size.width || height > s_max_frame_size.height ||
+		!(aspect_ratio > 0.0f))
 	{
 		Console.ErrorFmt("The GS drew a {}x{} frame at aspect ratio {}; the frame is dropped", width, height, aspect_ratio);
 		return false;
@@ -543,7 +548,7 @@ static bool EnsureCPUThread(std::unique_lock<std::mutex>& lock, Error* error)
 	return true;
 }
 
-bool LibretroSession::Prepare(VMBootParameters boot_params, Error* error)
+bool LibretroSession::Prepare(VMBootParameters boot_params, u32 upscale_multiplier, Error* error)
 {
 	std::unique_lock lock(s_mutex);
 	s_frontend_thread_id = std::this_thread::get_id();
@@ -557,7 +562,29 @@ bool LibretroSession::Prepare(VMBootParameters boot_params, Error* error)
 		return false;
 
 	s_prepared_boot = std::move(boot_params);
+	s_max_frame_size = GetMaxFrameSize(upscale_multiplier);
 	return true;
+}
+
+// CPU thread, once the GS opened: the GS clamps the configured multiplier to what it derives
+// from the device's texture size limit. That limit does not prove every allocation fits, so
+// frames keep their own validation and allocation failures their own reports.
+static void LogUpscaleMultiplier()
+{
+	float effective = 0.0f;
+	u32 max_texture_size = 0;
+	MTGS::RunOnGSThread([&effective, &max_texture_size]() {
+		effective = GSConfig.UpscaleMultiplier;
+		max_texture_size = g_gs_device->GetMaxTextureSize();
+	});
+	MTGS::WaitGS(false, false, false);
+
+	const float selected = EmuConfig.GS.UpscaleMultiplier;
+	if (effective != selected)
+		Console.WarningFmt("Internal resolution {}x selected, but the GS renders at {}x; maximum texture size {}",
+			selected, effective, max_texture_size);
+	else
+		Console.WriteLnFmt("Internal resolution {}x; maximum texture size {}", effective, max_texture_size);
 }
 
 bool LibretroSession::OpenGS(Error* error)
@@ -568,6 +595,8 @@ bool LibretroSession::OpenGS(Error* error)
 			// The GS reads its configuration when it opens.
 			VMManager::ApplySettings();
 			opened = MTGS::WaitForOpen();
+			if (opened)
+				LogUpscaleMultiplier();
 		},
 		true);
 
@@ -729,13 +758,14 @@ void LibretroSession::Stop()
 {
 	std::unique_lock lock(s_mutex);
 	s_prepared_boot.reset();
-	if (s_session_state == SessionState::None)
-		return;
+	if (s_session_state != SessionState::None)
+	{
+		s_stop_requested = true;
+		s_cv.notify_all();
 
-	s_stop_requested = true;
-	s_cv.notify_all();
-
-	WaitWithDiagnostics(lock, "VM shutdown", []() { return s_session_state == SessionState::None; });
+		WaitWithDiagnostics(lock, "VM shutdown", []() { return s_session_state == SessionState::None; });
+	}
+	s_max_frame_size = GetMaxFrameSize(1);
 }
 
 void LibretroSession::Shutdown()

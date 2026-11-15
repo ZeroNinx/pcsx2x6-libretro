@@ -126,15 +126,16 @@ void retro_get_system_info(retro_system_info* info)
 	info->block_extract = true;
 }
 
-// Starts the AV information over for new content; the session reports its own values once
-// it runs.
+// Starts the AV information over at native resolution; a successful content load raises the
+// maximum size to its own, and the session reports its own values once it runs.
 static void ResetOutputState()
 {
 	std::memset(&s_accepted_av, 0, sizeof(s_accepted_av));
 	s_accepted_av.geometry.base_width = INITIAL_WIDTH;
 	s_accepted_av.geometry.base_height = INITIAL_HEIGHT;
-	s_accepted_av.geometry.max_width = LibretroSession::MAX_FRAME_WIDTH;
-	s_accepted_av.geometry.max_height = LibretroSession::MAX_FRAME_HEIGHT;
+	const LibretroSession::FrameSize native = LibretroSession::GetMaxFrameSize(1);
+	s_accepted_av.geometry.max_width = native.width;
+	s_accepted_av.geometry.max_height = native.height;
 	s_accepted_av.geometry.aspect_ratio = INITIAL_ASPECT_RATIO;
 	s_accepted_av.timing.fps = NOMINAL_FPS;
 	s_accepted_av.timing.sample_rate = SAMPLE_RATE;
@@ -235,7 +236,8 @@ bool retro_load_game(const retro_game_info* game)
 
 	// The GS opens when the frontend creates the Vulkan device, and the VM boots once the
 	// frontend's context is ready, both after this returns.
-	if (!LibretroSession::Prepare(std::move(boot_params), &error))
+	const u32 upscale_multiplier = LibretroHost::GetUpscaleMultiplier();
+	if (!LibretroSession::Prepare(std::move(boot_params), upscale_multiplier, &error))
 	{
 		LibretroHost::ReportLoadFailure(error.GetDescription());
 		return false;
@@ -251,6 +253,13 @@ bool retro_load_game(const retro_game_info* game)
 	s_missing_image_reported = false;
 	s_context_lost = false;
 	s_session_failed = false;
+
+	// The frontend reads the AV information and creates its video driver after this returns, so
+	// the maximum size it allocates for already covers the selected internal resolution.
+	const LibretroSession::FrameSize max_frame = LibretroSession::GetMaxFrameSize(upscale_multiplier);
+	s_accepted_av.geometry.max_width = max_frame.width;
+	s_accepted_av.geometry.max_height = max_frame.height;
+	Console.WriteLnFmt("Maximum frame size {}x{}", max_frame.width, max_frame.height);
 
 	LibretroHost::DrainLogMessages();
 	return true;
@@ -429,6 +438,9 @@ void retro_run(void)
 		ContextFailed("An output image could not be created on the frontend's Vulkan device.");
 		return;
 	}
+
+	// A changed volume applies before this frame; other changed options wait for a reload.
+	LibretroHost::CheckOptionChanges();
 
 	// The frame is drawn into the image of the frontend's current sync index. A paused VM
 	// completes the request without running; the frame it presents again has no audio, and

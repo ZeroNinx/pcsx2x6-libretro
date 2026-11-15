@@ -19,10 +19,18 @@ struct VMBootParameters;
 /// requests and wait for their acknowledgement; VM state changes happen on the CPU thread.
 namespace LibretroSession
 {
-	/// Largest frame the session accepts and the frontend is told to expect: the 1080i
-	/// display mode, the largest GS video mode, at the fixed upscale multiplier of 1.
-	constexpr u32 MAX_FRAME_WIDTH = 1920;
-	constexpr u32 MAX_FRAME_HEIGHT = 1080;
+	struct FrameSize
+	{
+		u32 width = 0;
+		u32 height = 0;
+	};
+
+	/// Largest frame the session accepts and the frontend is told to expect: the 1080i display
+	/// mode, the largest GS video mode, at the internal resolution multiplier.
+	constexpr FrameSize GetMaxFrameSize(u32 upscale_multiplier)
+	{
+		return {1920 * upscale_multiplier, 1080 * upscale_multiplier};
+	}
 
 	/// Number of frontend input ports sampled for each frame.
 	constexpr u32 INPUT_PORTS = 2;
@@ -51,8 +59,9 @@ namespace LibretroSession
 	};
 
 	/// Creates the CPU thread if needed and keeps the boot parameters for Start(); nothing is
-	/// booted yet. Stop() discards parameters that were never started.
-	bool Prepare(VMBootParameters boot_params, Error* error);
+	/// booted yet. Frames of the session may be as large as GetMaxFrameSize() allows for
+	/// `upscale_multiplier`. Stop() discards parameters that were never started.
+	bool Prepare(VMBootParameters boot_params, u32 upscale_multiplier, Error* error);
 
 	/// Opens the GS on the CPU thread before the VM boots, so that the GS device exists while
 	/// the frontend sets up the graphics context it shares. Returns once the GS opened or failed.
@@ -95,7 +104,8 @@ namespace LibretroSession
 	void TakeAudio(LibretroAudio::Samples* samples);
 
 	/// Stops the active VM, if any, and waits until it has shut down. Discards prepared boot
-	/// parameters; the GS stays open until CloseGS().
+	/// parameters and returns the frame limit to native resolution; the GS stays open until
+	/// CloseGS().
 	void Stop();
 
 	/// Stops the VM, closes the GS and ends the CPU thread.

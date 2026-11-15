@@ -5,6 +5,8 @@
 
 #include "libretro.h"
 
+#include "common/Pcsx2Types.h"
+
 #include <string>
 #include <string_view>
 
@@ -31,6 +33,13 @@ namespace LibretroHost
 	/// Validates a content request and prepares the directories, settings, and BIOS it
 	/// needs. On success, returns the parameters that boot the manifest.
 	bool PrepareContent(const char* content_path, VMBootParameters* boot_params, Error* error);
+
+	/// The internal resolution multiplier the content prepared last was loaded with.
+	u32 GetUpscaleMultiplier();
+
+	/// Frontend thread, once per retro_run: applies a changed volume and tells the player once
+	/// per content session that other changed options need the content to be loaded again.
+	void CheckOptionChanges();
 
 	/// Releases the font data loaded for the GS. Only valid once the CPU thread has ended.
 	void ReleaseFonts();

@@ -19,6 +19,9 @@ target_sources(pcsx2x6_libretro PRIVATE
 	LibretroOptions.h
 	LibretroSession.cpp
 	LibretroSession.h
+	LibretroState.cpp
+	LibretroState.h
+	LibretroVersion.h
 	LibretroVulkan.cpp
 	LibretroVulkan.h
 	libretro.h
@@ -42,6 +45,7 @@ target_compile_definitions(pcsx2x6_libretro PRIVATE
 target_link_libraries(pcsx2x6_libretro PRIVATE
 	PCSX2_FLAGS
 	PCSX2
+	ZLIB::ZLIB
 )
 
 # A component install avoids installing build-time dependencies into RetroArch.

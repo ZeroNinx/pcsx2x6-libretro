@@ -26,6 +26,9 @@ public:
 
     bool IsOpen() const;
 
+    /// SHA-1 of the image's data as recorded in its header; false without an open image.
+    bool GetSha1(u8 (&sha1)[20]) const;
+
     ACMEDIATYPE GetType() const;
     u32 GetSectorSize() const;
     u64 GetSectorCount() const;

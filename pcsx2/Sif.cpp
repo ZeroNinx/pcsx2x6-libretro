@@ -18,7 +18,15 @@ bool SaveStateBase::sifFreeze()
 	if (!FreezeTag("SIFdma"))
 		return false;
 
-	Freeze(sif0);
-	Freeze(sif1);
+	// FIFO positions index its 128 words; the IOP counter is a 20-bit transfer count.
+	for (_sif* sif : {&sif0, &sif1})
+	{
+		NoteRange(*sif, sif->fifo.readPos, 0, FIFO_SIF_W - 1);
+		NoteRange(*sif, sif->fifo.writePos, 0, FIFO_SIF_W - 1);
+		NoteRange(*sif, sif->fifo.size, 0, FIFO_SIF_W);
+		NoteRange(*sif, sif->iop.writeJunk, 0, 3);
+		NoteRange(*sif, sif->iop.counter, 0, 0xFFFFF);
+		Freeze(*sif);
+	}
 	return IsOkay();
 }

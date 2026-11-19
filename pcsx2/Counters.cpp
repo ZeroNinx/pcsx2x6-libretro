@@ -1039,6 +1039,12 @@ template bool rcntWrite32<0x01>(u32 mem, mem32_t& value);
 
 bool SaveStateBase::rcntFreeze()
 {
+	// The rate divides cycle counts and the interrupt selects an INTC bit (9 to 12).
+	for (u32 i = 0; i < 4; i++)
+	{
+		NoteRange(counters, counters[i].rate, 1, std::numeric_limits<u32>::max());
+		NoteRange(counters, counters[i].interrupt, 9 + i, 9 + i);
+	}
 	Freeze(counters);
 	Freeze(hsyncCounter);
 	Freeze(vsyncCounter);

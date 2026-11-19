@@ -210,6 +210,21 @@ void cdvdLoadNVRAM()
 	DEV_LOG("Mechacon version: 0x{:08X}", s_mecha_version);
 }
 
+u64 cdvdGetPersistentDataFingerprint()
+{
+	u64 hash = 1469598103934665603ull;
+	const auto mix = [&hash](const void* data, size_t size) {
+		for (size_t i = 0; i < size; i++)
+		{
+			hash ^= static_cast<const u8*>(data)[i];
+			hash *= 1099511628211ull;
+		}
+	};
+	mix(s_nvram, sizeof(s_nvram));
+	mix(&s_mecha_version, sizeof(s_mecha_version));
+	return hash;
+}
+
 void cdvdSaveNVRAM()
 {
 	Error error;
@@ -1042,6 +1057,22 @@ bool SaveStateBase::cdvdFreeze()
 	if (!FreezeTag("cdvd"))
 		return false;
 
+	// Command parameter and result counts index their 16-byte buffers, the MagicGate data its
+	// 64 KiB buffer; the block size and read mode select the sector format, and the month
+	// indexes a 12-entry table.
+	NoteRange(cdvd, cdvd.NCMDParamCnt, 0, 16);
+	NoteRange(cdvd, cdvd.NCMDParamPos, 0, 16);
+	NoteRange(cdvd, cdvd.SCMDParamCnt, 0, 16);
+	NoteRange(cdvd, cdvd.SCMDParamPos, 0, 16);
+	NoteRange(cdvd, cdvd.SCMDResultCnt, 0, 16);
+	NoteRange(FieldOf(cdvd, cdvd.SCMDResultPos), -16, 0, FieldOf(cdvd, cdvd.SCMDResultCnt, -1));
+	NoteRange(cdvd, cdvd.mg_maxsize, 0, 0xFFFF);
+	NoteRange(cdvd, cdvd.mg_size, 0, 0xFFFF);
+	NoteRange(FieldOf(cdvd, cdvd.mg_size), -0xFFFF, 0, FieldOf(cdvd, cdvd.mg_maxsize, -1));
+	// The block size is 0 until the first read.
+	When(NoteRange(cdvd, cdvd.BlockSize, 2048, 2368), FieldOf(cdvd, cdvd.BlockSize), 0xFFFFFFFFu, 0, true);
+	NoteRange(cdvd, cdvd.ReadMode, 0, 4);
+	NoteRange(cdvd, cdvd.RTC.month, 1, 12);
 	Freeze(cdvd);
 	if (!IsOkay())
 		return false;

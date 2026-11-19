@@ -793,6 +793,7 @@ bool SaveStateBase::gifDmaFreeze()
 		return false;
 
 	Freeze(gif);
+	NoteRange(gif_fifo, gif_fifo.fifoSize, 0, 16);
 	Freeze(gif_fifo);
 
 	return IsOkay();

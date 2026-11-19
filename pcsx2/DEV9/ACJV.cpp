@@ -10,6 +10,7 @@
 #include "common/SettingsInterface.h"
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <atomic>
 #include <string>
 
@@ -1318,6 +1319,11 @@ void ACJV::OnBoardStart() {
 	rdbuf_getu16()[1] = JvFirmwareVersion();
 }
 
+// Board counters that advance with the bus traffic; part of a save state.
+static u8 s_acFrameSeq = 0; // advances once per root packet; the game waits on it to finalize a coin decrement
+static u16 s_lastCoinPkt = 0xFFFF; // packet ID of the last serviced coin-decrease packet
+static u16 s_fcaCounter = 0; // FCA-1 heartbeat (Ridge Racer V)
+
 void do_acjv_packet() {
 	const u16* wr16 = wrbuf_getu16();
 	u16* rd16 = rdbuf_getu16();
@@ -1328,7 +1334,6 @@ void do_acjv_packet() {
 		rd16[0x14]   = RootPacketID; // Xored with value at 0x10 in send packet, needs to be the same
 		rd16[0x21]   = wr16[0x0D];
 		rdbuf[0x30]  = s_dip_switch_state; // here the game polls the dip switch values?
-		static u8 s_acFrameSeq = 0;
 		rdbuf[0x57] = ++s_acFrameSeq; // game waits on this byte advancing each frame to finalize a coin decrement
 		u16 PacketID = wr16[0x0C];
 		if(PacketID != 0) {
@@ -1337,7 +1342,7 @@ void do_acjv_packet() {
 			} else {
 				do_jvs_packet(&wrbuf[0x22],  &rdbuf[0x5A]);
 			}
-			static u16 s_lastCoinPkt = 0xFFFF; // coin DECREASE rides in a 2nd JVS packet (slot 0x22); service it once per poll
+			// coin DECREASE rides in a 2nd JVS packet (slot 0x22); service it once per poll
 			if(wrbuf[0x122] == JVS_SYNC && wrbuf[0x22] == JVS_SYNC && wrbuf[0x23] != 0x00 && PacketID != s_lastCoinPkt) {
 				do_jvs_packet(&wrbuf[0x22], &rdbuf[0x5A]);
 				s_lastCoinPkt = PacketID;
@@ -1365,7 +1370,6 @@ void ACJV::UpdateFcaFrame()
 	if (s_gameid != "NM00001")
 		return;
 
-	static u16 s_fcaCounter = 0;
 	s_fcaCounter++;                            // FCA-1 heartbeat — unblocks FUN_00229af0 case 1
 	rdbuf[0x0e] = (u8)(s_fcaCounter & 0xff);   // counter: low byte @0x0e, high byte @0x0f
 	rdbuf[0x0f] = (u8)(s_fcaCounter >> 8);
@@ -1400,4 +1404,26 @@ void ACJV::UpdateFcaFrame()
 
 	// COIN: FCA-1 coin counter @rdbuf[0xc0]; RRV credits on increase (FUN_0022aa88). Mirror our coin count.
 	rdbuf[0xc0] = (u8)ACJV::coin[0];
+}
+
+void ACJV::SaveState(SavedState* state)
+{
+	state->enabled = ACJV::enabled ? 1 : 0;
+	state->frame_sequence = s_acFrameSeq;
+	state->dip_switch_state = s_dip_switch_state;
+	state->last_coin_packet = s_lastCoinPkt;
+	state->fca_counter = s_fcaCounter;
+	std::memcpy(state->rdbuf, rdbuf.data(), rdbuf.size());
+	std::memcpy(state->wrbuf, wrbuf.data(), wrbuf.size());
+}
+
+void ACJV::LoadState(const SavedState& state)
+{
+	ACJV::enabled = (state.enabled != 0);
+	s_acFrameSeq = state.frame_sequence;
+	s_dip_switch_state = state.dip_switch_state;
+	s_lastCoinPkt = state.last_coin_packet;
+	s_fcaCounter = state.fca_counter;
+	std::memcpy(rdbuf.data(), state.rdbuf, rdbuf.size());
+	std::memcpy(wrbuf.data(), state.wrbuf, wrbuf.size());
 }

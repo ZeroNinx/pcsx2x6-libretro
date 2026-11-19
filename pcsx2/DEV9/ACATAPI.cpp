@@ -351,3 +351,45 @@ void ACATAPI::Setup() {
     u32 SectorSizes[3] = {/*TODO: CHECK CD SECTOR SIZE*/0, ACATAPI::CONSTANTS::DVD_SECTORSIZE, 512};
     ACATA::TH::sectorsize = SectorSizes[ACATA::MediaType];
 }
+
+void ACATAPI::SaveState(SavedState* state)
+{
+	static_assert(sizeof(state->pio_buf) == sizeof(atapi_pio_buf) && sizeof(state->pio_write_buf) == sizeof(atapi_pio_write_buf) &&
+				  sizeof(state->dma_buf) == sizeof(atapi_dma_buf) && sizeof(state->mode_page_01) == sizeof(mode_page_01));
+	std::memcpy(state->pio_buf, atapi_pio_buf, sizeof(atapi_pio_buf));
+	state->pio_len = atapi_pio_len;
+	state->pio_pos = atapi_pio_pos;
+	state->pio_chunk = atapi_pio_chunk;
+	state->pio_chunk_busy = atapi_pio_chunk_busy;
+	std::memcpy(state->pio_write_buf, atapi_pio_write_buf, sizeof(atapi_pio_write_buf));
+	state->pio_write_len = atapi_pio_write_len;
+	state->pio_write_pos = atapi_pio_write_pos;
+	std::memcpy(state->dma_buf, atapi_dma_buf, sizeof(atapi_dma_buf));
+	state->dma_len = atapi_dma_len;
+	std::memcpy(state->mode_page_01, mode_page_01, sizeof(mode_page_01));
+	state->mode_page_01_set = mode_page_01_set ? 1 : 0;
+}
+
+bool ACATAPI::ValidateState(const SavedState& state)
+{
+	// Every buffer access is guarded by its position lying below its length, and a finished
+	// transfer keeps its position with a Zero length; only the lengths bound the accesses.
+	return state.pio_len <= sizeof(atapi_pio_buf) && state.pio_write_len <= sizeof(atapi_pio_write_buf) &&
+		   state.dma_len <= sizeof(atapi_dma_buf);
+}
+
+void ACATAPI::LoadState(const SavedState& state)
+{
+	std::memcpy(atapi_pio_buf, state.pio_buf, sizeof(atapi_pio_buf));
+	atapi_pio_len = state.pio_len;
+	atapi_pio_pos = state.pio_pos;
+	atapi_pio_chunk = state.pio_chunk;
+	atapi_pio_chunk_busy = state.pio_chunk_busy;
+	std::memcpy(atapi_pio_write_buf, state.pio_write_buf, sizeof(atapi_pio_write_buf));
+	atapi_pio_write_len = state.pio_write_len;
+	atapi_pio_write_pos = state.pio_write_pos;
+	std::memcpy(atapi_dma_buf, state.dma_buf, sizeof(atapi_dma_buf));
+	atapi_dma_len = state.dma_len;
+	std::memcpy(mode_page_01, state.mode_page_01, sizeof(mode_page_01));
+	mode_page_01_set = (state.mode_page_01_set != 0);
+}

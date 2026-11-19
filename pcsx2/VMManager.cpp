@@ -201,6 +201,7 @@ static std::string s_input_profile_name;
 static u32 s_frame_advance_count = 0;
 static bool s_fast_boot_requested = false;
 static bool s_gs_open_on_initialize = false;
+static bool s_persistent_data_untrusted = false;
 static bool s_thread_affinities_set = false;
 static bool s_acgame_sys256 = false;
 
@@ -1642,6 +1643,8 @@ VMBootResult VMManager::Initialize(const VMBootParameters& boot_params, Error* e
 		return VMBootResult::StartupFailure;
 	}
 
+	s_persistent_data_untrusted = false;
+
 	// cancel any game list scanning, we need to use CDVD!
 	// TODO: we can get rid of this once, we make CDVD not use globals...
 	// (or make it thread-local, but that seems silly.)
@@ -2043,6 +2046,8 @@ void VMManager::Shutdown(bool save_resume_state)
 
 	if (GSDumpReplayer::IsReplayingDump())
 		GSDumpReplayer::Shutdown();
+	else if (s_persistent_data_untrusted)
+		Console.Warning("(VMManager) A state was only partly restored; SRAM and BIOS NVRAM are not written back");
 	else {
 		cdvdSaveNVRAM();
 		ACSRAM::WriteFile();
@@ -3176,6 +3181,11 @@ u32 VMManager::Internal::GetCurrentELFEntryPoint()
 const std::string& VMManager::Internal::GetELFOverride()
 {
 	return s_elf_override;
+}
+
+void VMManager::Internal::SetPersistentDataUntrusted(bool untrusted)
+{
+	s_persistent_data_untrusted = untrusted;
 }
 
 bool VMManager::Internal::IsExecutionInterrupted()

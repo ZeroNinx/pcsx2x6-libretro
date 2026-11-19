@@ -35,6 +35,10 @@ public:
 	void FullReset();
 	bool DoState(StateWrapper& sw);
 
+	/// Reads a saved block as DoState() does, without changing anything, and checks that the
+	/// slots it selects exist.
+	static bool CheckState(StateWrapper& sw);
+
 	u8 GetPadSlot();
 	u8 GetMemcardSlot();
 

@@ -28,6 +28,19 @@ using OutputStreamFactory = std::unique_ptr<AudioStream> (*)(u32 sample_rate, co
 /// backend. Takes effect when the next stream is created.
 void SetOutputStreamFactory(OutputStreamFactory factory);
 
+/// In-memory save states: checks a saved SPU2 block before it is loaded, and clears the host
+/// addresses a save leaves in it, which loading rebuilds.
+bool ValidateFreezeData(std::span<const u8> data, Error* error);
+void NormalizeFreezeData(std::span<u8> data);
+
+/// The output continuation of an in-memory save state: the partly filled output chunk, the DC
+/// filter history and the ADPCM block each voice is reading. They decide the next output samples
+/// and are not part of the SPU2 block. Loading it has to follow loading the SPU2 block.
+u32 GetOutputStateSize();
+void SaveOutputState(std::span<u8> out);
+bool ValidateOutputState(std::span<const u8> data, Error* error);
+void LoadOutputState(std::span<const u8> data);
+
 /// Open/close, call at VM startup/shutdown.
 bool Open();
 void Close();

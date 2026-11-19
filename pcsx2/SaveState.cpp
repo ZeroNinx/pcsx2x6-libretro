@@ -5,6 +5,10 @@
 #include "BuildVersion.h"
 #include "CDVD/CDVD.h"
 #include "COP0.h"
+#include "DEV9/ACSTATE.h"
+#include "Gif_Unit.h"
+#include "IPU/IPU.h"
+#include "Vif_Dynarec.h"
 #include "Cache.h"
 #include "Config.h"
 #include "Counters.h"
@@ -42,6 +46,7 @@
 #include "fmt/format.h"
 
 #include <csetjmp>
+#include <limits>
 #include <png.h>
 
 using namespace R5900;
@@ -91,30 +96,54 @@ static void PostLoadPrep()
 //  SaveStateBase  (implementations)
 // --------------------------------------------------------------------------------------
 SaveStateBase::SaveStateBase(VmStateBuffer& memblock)
-	: m_memory(memblock)
+	: m_growable(&memblock)
+	, m_data(memblock.data())
+	, m_size(static_cast<u32>(memblock.size()))
 	, m_version(g_SaveVersion)
 {
 }
 
-void SaveStateBase::PrepBlock(int size)
+SaveStateBase::SaveStateBase(std::span<u8> memblock)
+	: m_data(memblock.data())
+	, m_size(static_cast<u32>(memblock.size()))
+	, m_version(g_SaveVersion)
+{
+}
+
+bool SaveStateBase::PrepareAccess(int size)
 {
 	if (m_error)
-		return;
+		return false;
 
-	const int end = m_idx + size;
-	if (IsSaving())
+	if (size < 0)
 	{
-		if (static_cast<u32>(end) >= m_memory.size())
-			m_memory.resize(static_cast<u32>(end));
+		Console.Error("(SaveStateBase) Invalid access of %d bytes", size);
+		m_error = true;
+		return false;
 	}
-	else
+
+	// The position never lies beyond the data, so the remaining space cannot underflow.
+	const u32 remaining = GetRemaining();
+	if (static_cast<u32>(size) <= remaining)
+		return true;
+
+	const u64 end = static_cast<u64>(static_cast<u32>(m_idx)) + static_cast<u32>(size);
+	if (IsLoading() || !m_growable || end > std::numeric_limits<u32>::max())
 	{
-		if (m_memory.size() < static_cast<u32>(end))
-		{
-			Console.Error("(SaveStateBase) Buffer overflow in PrepBlock(), expected %d got %zu", end, m_memory.size());
-			m_error = true;
-		}
+		Console.Error("(SaveStateBase) Access of %d bytes at %d exceeds the %u-byte block", size, m_idx, m_size);
+		m_error = true;
+		return false;
 	}
+
+	m_growable->resize(static_cast<size_t>(end));
+	m_data = m_growable->data();
+	m_size = static_cast<u32>(end);
+	return true;
+}
+
+void SaveStateBase::PrepBlock(int size)
+{
+	PrepareAccess(size);
 }
 
 bool SaveStateBase::FreezeTag(const char* src)
@@ -127,6 +156,7 @@ bool SaveStateBase::FreezeTag(const char* src)
 
 	std::memset(tagspace, 0, sizeof(tagspace));
 	StringUtil::Strlcpy(tagspace, src, sizeof(tagspace));
+	NoteFixedBytes(sizeof(tagspace));
 	Freeze(tagspace);
 
 	if (std::strcmp(tagspace, src) != 0)
@@ -188,6 +218,7 @@ bool SaveStateBase::FreezeInternals(Error* error)
 	Freeze(psxRegs);		// iop regs
 	Freeze(fpuRegs);
 	Freeze(tlb);			// tlbs
+	NoteRange(cachedTlbs, cachedTlbs.count, 0, static_cast<s64>(cachedTlbs.PageMasks.size()));
 	Freeze(cachedTlbs);		// cached tlbs
 	Freeze(AllowParams1);	//OSDConfig written (Fast Boot)
 	Freeze(AllowParams2);
@@ -245,7 +276,7 @@ bool SaveStateBase::FreezeInternals(Error* error)
 		if (IsSaving())
 			save_stream.emplace();
 		else
-			load_stream.emplace(&m_memory[m_idx], static_cast<int>(m_memory.size()) - m_idx);
+			load_stream.emplace(GetBlockPtr(), GetRemaining());
 
 		StateWrapper sw(IsSaving() ? static_cast<StateWrapper::IStream*>(&save_stream.value()) :
 									 static_cast<StateWrapper::IStream*>(&load_stream.value()),
@@ -261,15 +292,16 @@ bool SaveStateBase::FreezeInternals(Error* error)
 
 		if (IsSaving())
 		{
+			NoteVariableField(SaveStateVariableField::Stream, save_stream->GetPosition());
 			FreezeMem(const_cast<u8*>(save_stream->GetBuffer().data()), save_stream->GetPosition());
 		}
 		else
 		{
-			const int new_idx = m_idx + static_cast<int>(load_stream->GetPosition());
-			if (static_cast<size_t>(new_idx) >= m_memory.size())
+			const u32 new_idx = static_cast<u32>(m_idx) + load_stream->GetPosition();
+			if (new_idx > m_size)
 				return false;
 
-			m_idx = new_idx;
+			m_idx = static_cast<int>(new_idx);
 		}
 	}
 
@@ -298,42 +330,44 @@ memSavingState::memSavingState(VmStateBuffer& save_to)
 {
 }
 
+memSavingState::memSavingState(std::span<u8> save_to)
+	: SaveStateBase(save_to)
+{
+}
+
 // Saving of state data
 void memSavingState::FreezeMem(void* data, int size)
 {
-	if (!size) return;
+	if (!PrepareAccess(size) || size == 0)
+		return;
 
-	const int new_size = m_idx + size;
-	if (static_cast<u32>(new_size) > m_memory.size())
-		m_memory.resize(static_cast<u32>(new_size));
-
-	std::memcpy(&m_memory[m_idx], data, size);
+	std::memcpy(m_data + m_idx, data, size);
 	m_idx += size;
 }
 
 // --------------------------------------------------------------------------------------
 //  memLoadingState  (implementations)
 // --------------------------------------------------------------------------------------
+// Loading only reads the block, so the source is never written through the mutable view.
 memLoadingState::memLoadingState(const VmStateBuffer& load_from)
-	: SaveStateBase(const_cast<VmStateBuffer&>(load_from))
+	: SaveStateBase(std::span<u8>(const_cast<u8*>(load_from.data()), load_from.size()))
 {
 }
 
-// Loading of state data from a memory buffer...
+memLoadingState::memLoadingState(std::span<const u8> load_from)
+	: SaveStateBase(std::span<u8>(const_cast<u8*>(load_from.data()), load_from.size()))
+{
+}
+
+// Loading of state data from a memory buffer. Reading past the end fails without touching the
+// destination.
 void memLoadingState::FreezeMem( void* data, int size )
 {
-	if (static_cast<u32>(m_idx + size) > m_memory.size())
-		m_error = true;
-
-	if (m_error)
-	{
-		std::memset(data, 0, size);
+	if (!PrepareAccess(size) || size == 0)
 		return;
-	}
 
-	const u8* const src = &m_memory[m_idx];
+	std::memcpy(data, m_data + m_idx, size);
 	m_idx += size;
-	std::memcpy(data, src, size);
 }
 
 static const char* EntryFilename_StateVersion = "PCSX2x6 Savestate Version.id";
@@ -404,6 +438,8 @@ static bool SysState_ComponentFreezeOut(SaveStateBase& writer, SysState_Componen
 
 	const int size = fP.size;
 	writer.PrepBlock(size);
+	if (!writer.IsOkay())
+		return false;
 
 	Console.WriteLn("  Saving %s", comp.name);
 
@@ -447,11 +483,55 @@ static bool SysState_ComponentFreezeOutNew(SaveStateBase& writer, const char* na
 	if (size > 0)
 	{
 		writer.PrepBlock(size);
+		if (!writer.IsOkay())
+			return false;
 		std::memcpy(writer.GetBlockPtr(), stream.GetBuffer().data(), size);
 		writer.CommitBlock(size);
 	}
 
 	return true;
+}
+
+// The in-memory counterparts read a component from a block of exactly its size.
+static bool SysState_ComponentLoadFromMemory(std::span<const u8> data, SysState_Component comp)
+{
+	freezeData fP = {0, nullptr};
+	if (comp.freeze(FreezeAction::Size, &fP) != 0 || static_cast<size_t>(fP.size) != data.size())
+	{
+		Console.ErrorFmt("* {}: the state holds {} bytes, the component needs {}", comp.name, data.size(), fP.size);
+		return false;
+	}
+
+	// Loading reads the data only.
+	fP.data = const_cast<u8*>(data.data());
+	if (comp.freeze(FreezeAction::Load, &fP) != 0)
+	{
+		Console.Error(fmt::format("* {}: Failed to load freeze data", comp.name));
+		return false;
+	}
+
+	return true;
+}
+
+static bool SysState_ComponentLoadFromMemoryNew(std::span<const u8> data, const char* name, bool (*do_state_func)(StateWrapper&))
+{
+	StateWrapper::ReadOnlyMemoryStream stream(data.data(), static_cast<u32>(data.size()));
+	StateWrapper sw(&stream, StateWrapper::Mode::Read, g_SaveVersion);
+	if (!do_state_func(sw) || !sw.IsGood() || stream.GetPosition() != data.size())
+	{
+		Console.ErrorFmt("* {}: the state does not match the component", name);
+		return false;
+	}
+
+	return true;
+}
+
+static std::optional<u32> SysState_ComponentSize(SysState_Component comp)
+{
+	freezeData fP = {0, nullptr};
+	if (comp.freeze(FreezeAction::Size, &fP) != 0 || fP.size <= 0)
+		return std::nullopt;
+	return static_cast<u32>(fP.size);
 }
 
 // --------------------------------------------------------------------------------------
@@ -469,6 +549,14 @@ public:
 	virtual bool FreezeIn(zip_file_t* zf) const = 0;
 	virtual bool FreezeOut(SaveStateBase& writer) const = 0;
 	virtual bool IsRequired() const = 0;
+
+	// In-memory states: whether the entry is part of them, its size when it does not depend
+	// on the state, and loading it from a block holding exactly its data. A memory saved
+	// page-encoded returns its memory.
+	virtual bool IsInMemoryState() const { return true; }
+	virtual std::span<u8> GetPagedMemory() const { return {}; }
+	virtual std::optional<u32> GetFixedSize() const = 0;
+	virtual bool LoadFromMemory(std::span<const u8> data) const = 0;
 };
 
 class MemorySavestateEntry : public BaseSavestateEntry
@@ -481,6 +569,18 @@ public:
 	virtual bool FreezeIn(zip_file_t* zf) const;
 	virtual bool FreezeOut(SaveStateBase& writer) const;
 	virtual bool IsRequired() const { return true; }
+
+	std::optional<u32> GetFixedSize() const override { return GetDataSize(); }
+	bool LoadFromMemory(std::span<const u8> data) const override
+	{
+		if (data.size() != GetDataSize())
+		{
+			Console.ErrorFmt("* {}: the state holds {} bytes, the entry needs {}", GetFilename(), data.size(), GetDataSize());
+			return false;
+		}
+		std::memcpy(GetDataPtr(), data.data(), data.size());
+		return true;
+	}
 
 protected:
 	virtual u8* GetDataPtr() const = 0;
@@ -523,6 +623,7 @@ public:
 	const char* GetFilename() const override { return "eeMemory.bin"; }
 	u8* GetDataPtr() const override { return eeMem->Main; }
 	uint GetDataSize() const override { return Ps2MemSize::ExposedRam; }
+	std::span<u8> GetPagedMemory() const override { return {GetDataPtr(), GetDataSize()}; }
 
 	virtual bool FreezeIn(zip_file_t* zf) const override
 	{
@@ -538,6 +639,7 @@ public:
 	const char* GetFilename() const override { return "iopMemory.bin"; }
 	u8* GetDataPtr() const override { return iopMem->Main; }
 	uint GetDataSize() const override { return Ps2MemSize::ExposedIopRam; }
+	std::span<u8> GetPagedMemory() const override { return {GetDataPtr(), GetDataSize()}; }
 };
 
 class SavestateEntry_ACRAM final : public MemorySavestateEntry
@@ -548,6 +650,7 @@ public:
 	const char* GetFilename() const override { return "ACRAM.bin"; }
 	u8* GetDataPtr() const override { return iopMem->ACRAM; }
 	uint GetDataSize() const override { return NamcoMemSize::ACRAM; }
+	std::span<u8> GetPagedMemory() const override { return {GetDataPtr(), GetDataSize()}; }
 };
 
 #include "DEV9/ACSRAM.h"
@@ -652,6 +755,8 @@ public:
 	bool FreezeIn(zip_file_t* zf) const override { return SysState_ComponentFreezeIn(zf, SPU2_); }
 	bool FreezeOut(SaveStateBase& writer) const override { return SysState_ComponentFreezeOut(writer, SPU2_); }
 	bool IsRequired() const override { return true; }
+	std::optional<u32> GetFixedSize() const override { return SysState_ComponentSize(SPU2_); }
+	bool LoadFromMemory(std::span<const u8> data) const override { return SysState_ComponentLoadFromMemory(data, SPU2_); }
 };
 
 class SavestateEntry_USB final : public BaseSavestateEntry
@@ -663,6 +768,10 @@ public:
 	bool FreezeIn(zip_file_t* zf) const override { return SysState_ComponentFreezeInNew(zf, "USB", &USB::DoState); }
 	bool FreezeOut(SaveStateBase& writer) const override { return SysState_ComponentFreezeOutNew(writer, "USB", 16 * 1024, &USB::DoState); }
 	bool IsRequired() const override { return false; }
+	// In-memory states require that no USB device is configured.
+	bool IsInMemoryState() const override { return false; }
+	std::optional<u32> GetFixedSize() const override { return std::nullopt; }
+	bool LoadFromMemory(std::span<const u8> data) const override { return false; }
 };
 
 class SavestateEntry_PAD final : public BaseSavestateEntry
@@ -674,6 +783,22 @@ public:
 	bool FreezeIn(zip_file_t* zf) const override { return SysState_ComponentFreezeInNew(zf, "PAD", &Pad::Freeze); }
 	bool FreezeOut(SaveStateBase& writer) const override { return SysState_ComponentFreezeOutNew(writer, "PAD", 16 * 1024, &Pad::Freeze); }
 	bool IsRequired() const override { return true; }
+	// The size follows the configured pads; it is measured with a save.
+	std::optional<u32> GetFixedSize() const override { return std::nullopt; }
+	bool LoadFromMemory(std::span<const u8> data) const override { return SysState_ComponentLoadFromMemoryNew(data, "PAD", &Pad::Freeze); }
+
+	// Reads the block into scratch pads, leaving the connected controllers unchanged.
+	static bool Validate(std::span<const u8> data, Error* error)
+	{
+		StateWrapper::ReadOnlyMemoryStream stream(data.data(), static_cast<u32>(data.size()));
+		StateWrapper sw(&stream, StateWrapper::Mode::Read, g_SaveVersion);
+		if (!Pad::CheckState(sw) || !sw.IsGood() || stream.GetPosition() != data.size())
+		{
+			Error::SetString(error, "The state's controller block is malformed.");
+			return false;
+		}
+		return true;
+	}
 };
 
 class SavestateEntry_GS final : public BaseSavestateEntry
@@ -685,6 +810,8 @@ public:
 	bool FreezeIn(zip_file_t* zf) const { return SysState_ComponentFreezeIn(zf, GS); }
 	bool FreezeOut(SaveStateBase& writer) const { return SysState_ComponentFreezeOut(writer, GS); }
 	bool IsRequired() const { return true; }
+	std::optional<u32> GetFixedSize() const override { return SysState_ComponentSize(GS); }
+	bool LoadFromMemory(std::span<const u8> data) const override { return SysState_ComponentLoadFromMemory(data, GS); }
 };
 
 class SaveStateEntry_Achievements final : public BaseSavestateEntry
@@ -719,6 +846,10 @@ class SaveStateEntry_Achievements final : public BaseSavestateEntry
 	}
 
 	bool IsRequired() const override { return false; }
+	// In-memory states require achievements to be inactive.
+	bool IsInMemoryState() const override { return false; }
+	std::optional<u32> GetFixedSize() const override { return std::nullopt; }
+	bool LoadFromMemory(std::span<const u8> data) const override { return false; }
 };
 
 // (cpuRegs, iopRegs, VPU/GIF/DMAC structures should all remain as part of a larger unified
@@ -1268,6 +1399,915 @@ bool SaveState_UnzipFromDisk(const std::string& filename, Error* error)
 	}
 
 	PostLoadPrep();
+	return true;
+}
+
+// --------------------------------------------------------------------------------------
+//  In-memory states in caller-owned buffers
+// --------------------------------------------------------------------------------------
+
+namespace
+{
+	enum class SegmentKind
+	{
+		Internals,
+		Layout,
+		Entry,
+		ArcadeDevices,
+		AudioOutput,
+	};
+
+	struct SegmentSource
+	{
+		SegmentKind kind;
+		const BaseSavestateEntry* entry;
+	};
+
+	// Upper bounds of the variable fields of the internal structures: the only string is the
+	// booted ELF path, and the SIO2 FIFOs never hold more than a few commands.
+	constexpr u32 MAX_STATE_STRING = 4096;
+	constexpr u32 MAX_SIO2_FIFO = 32 * 1024;
+	constexpr u32 MAX_LAYOUT_RECORDS = 64;
+
+	// The variable fields of the internals segment saved last; the layout segment holds them.
+	std::vector<SaveStateFieldRecord> s_saved_layout;
+
+	// Page encoding of a memory: header, bitmap of non-zero pages, then those pages in order.
+	constexpr u32 PAGE_ENCODING_VERSION = 1;
+	constexpr u32 STATE_PAGE_SIZE = 4096;
+
+	struct PagedHeader
+	{
+		u32 version;
+		u32 page_size;
+		u32 page_count;
+		u32 present_count;
+	};
+
+	u32 GetBitmapWords(u32 page_count)
+	{
+		return (page_count + 63) / 64;
+	}
+
+	u64 GetPagedLength(u32 page_count, u32 present_count)
+	{
+		return sizeof(PagedHeader) + static_cast<u64>(GetBitmapWords(page_count)) * sizeof(u64) +
+			   static_cast<u64>(present_count) * STATE_PAGE_SIZE;
+	}
+
+	bool IsZeroPage(const u8* page)
+	{
+		u64 bits = 0;
+		for (u32 i = 0; i < STATE_PAGE_SIZE; i += sizeof(u64))
+		{
+			u64 word;
+			std::memcpy(&word, page + i, sizeof(word));
+			bits |= word;
+		}
+		return bits == 0;
+	}
+
+	void BuildPageBitmap(std::span<const u8> memory, std::vector<u64>* bitmap, u32* present)
+	{
+		const u32 page_count = static_cast<u32>(memory.size() / STATE_PAGE_SIZE);
+		bitmap->assign(GetBitmapWords(page_count), 0);
+		*present = 0;
+		for (u32 page = 0; page < page_count; page++)
+		{
+			if (!IsZeroPage(memory.data() + static_cast<size_t>(page) * STATE_PAGE_SIZE))
+			{
+				(*bitmap)[page / 64] |= u64{1} << (page % 64);
+				(*present)++;
+			}
+		}
+	}
+
+	void SavePaged(std::span<const u8> memory, const std::vector<u64>& bitmap, u32 present, std::span<u8> out)
+	{
+		const u32 page_count = static_cast<u32>(memory.size() / STATE_PAGE_SIZE);
+		const PagedHeader header = {PAGE_ENCODING_VERSION, STATE_PAGE_SIZE, page_count, present};
+		std::memcpy(out.data(), &header, sizeof(header));
+		std::memcpy(out.data() + sizeof(header), bitmap.data(), bitmap.size() * sizeof(u64));
+		u8* next = out.data() + sizeof(header) + bitmap.size() * sizeof(u64);
+		for (u32 page = 0; page < page_count; page++)
+		{
+			if (bitmap[page / 64] & (u64{1} << (page % 64)))
+			{
+				std::memcpy(next, memory.data() + static_cast<size_t>(page) * STATE_PAGE_SIZE, STATE_PAGE_SIZE);
+				next += STATE_PAGE_SIZE;
+			}
+		}
+	}
+
+	// The header, the bitmap and the length: the version and page size of this format, the page
+	// count of the running VM's memory, as many present pages as bitmap bits, no bits beyond the
+	// last page, and exactly as many bytes as the present pages need.
+	bool ValidatePaged(std::span<const u8> data, size_t memory_size, const char* name, Error* error)
+	{
+		const u32 page_count = static_cast<u32>(memory_size / STATE_PAGE_SIZE);
+		const u64 bitmap_bytes = static_cast<u64>(GetBitmapWords(page_count)) * sizeof(u64);
+		PagedHeader header = {};
+		if (data.size() >= sizeof(header))
+			std::memcpy(&header, data.data(), sizeof(header));
+		if (data.size() < sizeof(header) + bitmap_bytes || header.version != PAGE_ENCODING_VERSION ||
+			header.page_size != STATE_PAGE_SIZE || header.page_count != page_count || header.present_count > page_count)
+		{
+			Error::SetStringFmt(error, "The state's {} segment has an invalid page header.", name);
+			return false;
+		}
+
+		u64 present = 0;
+		for (u32 word = 0; word < GetBitmapWords(page_count); word++)
+		{
+			u64 bits;
+			std::memcpy(&bits, data.data() + sizeof(header) + word * sizeof(u64), sizeof(bits));
+			const u32 valid_bits = std::min<u32>(64, page_count - word * 64);
+			if (valid_bits < 64 && (bits >> valid_bits) != 0)
+			{
+				Error::SetStringFmt(error, "The state's {} segment marks pages beyond its memory.", name);
+				return false;
+			}
+			present += static_cast<u64>(std::popcount(bits));
+		}
+		if (present != header.present_count || data.size() != GetPagedLength(page_count, header.present_count))
+		{
+			Error::SetStringFmt(error, "The state's {} segment holds {} bytes for {} marked pages.", name, data.size(), present);
+			return false;
+		}
+		return true;
+	}
+
+	// Loads a validated page-encoded memory; pages without data are cleared.
+	void LoadPaged(std::span<const u8> data, std::span<u8> memory)
+	{
+		const u32 page_count = static_cast<u32>(memory.size() / STATE_PAGE_SIZE);
+		const u8* bitmap = data.data() + sizeof(PagedHeader);
+		const u8* next = bitmap + static_cast<size_t>(GetBitmapWords(page_count)) * sizeof(u64);
+		for (u32 page = 0; page < page_count; page++)
+		{
+			u64 bits;
+			std::memcpy(&bits, bitmap + (page / 64) * sizeof(u64), sizeof(bits));
+			u8* const target = memory.data() + static_cast<size_t>(page) * STATE_PAGE_SIZE;
+			if (bits & (u64{1} << (page % 64)))
+			{
+				std::memcpy(target, next, STATE_PAGE_SIZE);
+				next += STATE_PAGE_SIZE;
+			}
+			else
+			{
+				std::memset(target, 0, STATE_PAGE_SIZE);
+			}
+		}
+	}
+
+	std::vector<SegmentSource> GetSegmentSources()
+	{
+		std::vector<SegmentSource> sources = {{SegmentKind::Internals, nullptr}, {SegmentKind::Layout, nullptr}};
+		for (const std::unique_ptr<BaseSavestateEntry>& entry : SavestateEntries)
+		{
+			if (entry->IsInMemoryState())
+				sources.push_back({SegmentKind::Entry, entry.get()});
+		}
+		sources.push_back({SegmentKind::ArcadeDevices, nullptr});
+		sources.push_back({SegmentKind::AudioOutput, nullptr});
+		return sources;
+	}
+
+	bool CheckConfiguration(Error* error)
+	{
+		if (EmuConfig.HostFs)
+		{
+			Error::SetString(error, "Save states are not supported while HostFS is enabled.");
+			return false;
+		}
+		for (const Pcsx2Config::USBOptions::Port& port : EmuConfig.USB.Ports)
+		{
+			if (port.DeviceType >= 0)
+			{
+				Error::SetString(error, "Save states are not supported while a USB device is configured.");
+				return false;
+			}
+		}
+		if (Achievements::IsActive())
+		{
+			Error::SetString(error, "Save states are not supported while achievements are active.");
+			return false;
+		}
+		return ACSTATE::CheckSupported(error);
+	}
+
+	// The Gif_Path fields a save writes before the packet data, and where the host buffer
+	// pointer lies within them.
+	u32 GetGifPathFieldsSize()
+	{
+		return static_cast<u32>(sizeof(Gif_Path) - sizeof(Gif_Path_MTVU));
+	}
+
+	u32 GetGifPathOffset(const void* member)
+	{
+		return static_cast<u32>(static_cast<const u8*>(member) - reinterpret_cast<const u8*>(&gifUnit.gifPath[0]));
+	}
+
+	// Bytes from the recorded offset of a field to its end, and the part of them that varies.
+	u64 GetFieldLength(const SaveStateFieldRecord& field)
+	{
+		switch (field.kind)
+		{
+			case SaveStateVariableField::String:
+				return sizeof(u32) + static_cast<u64>(field.value);
+			case SaveStateVariableField::GifPath:
+				return GetGifPathFieldsSize() + static_cast<u64>(field.value);
+			case SaveStateVariableField::Stream:
+				return field.value;
+			case SaveStateVariableField::HostHandles:
+				return sizeof(size_t);
+			case SaveStateVariableField::VifBuffer:
+				return sizeof(u32) + static_cast<u64>(field.value);
+		}
+		return 0;
+	}
+
+	u64 GetFieldPayload(const SaveStateFieldRecord& field)
+	{
+		return (field.kind == SaveStateVariableField::HostHandles) ? 0 : field.value;
+	}
+
+	// The largest payload of a field, given the same field of the running VM. A stream holds
+	// fixed-size members besides the two SIO2 FIFOs; HostFS is never enabled for these states.
+	u64 GetFieldPayloadLimit(const SaveStateFieldRecord& current, u32 gif_index)
+	{
+		switch (current.kind)
+		{
+			case SaveStateVariableField::String:
+				return MAX_STATE_STRING;
+			case SaveStateVariableField::GifPath:
+				return gifUnit.gifPath[gif_index].buffSize;
+			case SaveStateVariableField::Stream:
+				return static_cast<u64>(current.value) - g_Sio2FifoIn.size() - g_Sio2FifoOut.size() + 2 * MAX_SIO2_FIFO;
+			case SaveStateVariableField::HostHandles:
+				return 0;
+			case SaveStateVariableField::VifBuffer:
+				return sizeof(nVif[0].buffer);
+		}
+		return 0;
+	}
+
+	bool SaveInternals(std::vector<u8>* data, std::vector<SaveStateFieldRecord>* layout, Error* error,
+		std::vector<SaveStateFieldConstraint>* constraints = nullptr)
+	{
+		data->clear();
+		layout->clear();
+		memSavingState saver(*data);
+		saver.SetInMemoryState();
+		saver.SetLayoutRecorder(layout);
+		if (constraints)
+		{
+			constraints->clear();
+			saver.SetConstraintRecorder(constraints);
+		}
+		Error freeze_error;
+		if (!saver.FreezeBios() || !saver.FreezeInternals(&freeze_error) || saver.HasError())
+		{
+			Error::SetStringFmt(error, "The internal structures could not be saved: {}", freeze_error.GetDescription());
+			return false;
+		}
+		data->resize(saver.GetCurrentPos());
+		return true;
+	}
+
+	template <typename T>
+	T ReadValue(std::span<const u8> data, u64 offset)
+	{
+		T value;
+		std::memcpy(&value, data.data() + offset, sizeof(T));
+		return value;
+	}
+
+	// The host buffer pointers of the GIF paths are not state: loading keeps the running VM's own.
+	void NormalizeGifPaths(std::span<u8> internals, const std::vector<SaveStateFieldRecord>& layout)
+	{
+		const u32 buffer_offset = GetGifPathOffset(&gifUnit.gifPath[0].buffer);
+		for (const SaveStateFieldRecord& field : layout)
+		{
+			if (field.kind == SaveStateVariableField::GifPath && static_cast<u64>(field.offset) + buffer_offset + sizeof(u8*) <= internals.size())
+				std::memset(internals.data() + field.offset + buffer_offset, 0, sizeof(u8*));
+		}
+	}
+
+	// Little-endian integer of `size` bytes at `offset`; the caller has checked the bounds.
+	s64 ReadInteger(std::span<const u8> data, u64 offset, u32 size, bool is_signed)
+	{
+		u64 value = 0;
+		std::memcpy(&value, data.data() + offset, size);
+		if (is_signed && size < sizeof(value) && (value >> (size * 8 - 1)) != 0)
+			value |= ~u64{0} << (size * 8);
+		return static_cast<s64>(value);
+	}
+
+	// Where a fixed field of the running VM's internal structures lies in a state whose variable
+	// fields before it hold other lengths. Fields are recorded in order, so every variable field
+	// that ends before `offset` lies entirely before it.
+	u64 MapOffset(u32 offset, const std::vector<SaveStateFieldRecord>& saved, const std::vector<SaveStateFieldRecord>& current)
+	{
+		s64 delta = 0;
+		for (size_t i = 0; i < current.size(); i++)
+		{
+			if (current[i].offset + GetFieldLength(current[i]) > offset)
+				break;
+			delta += static_cast<s64>(GetFieldLength(saved[i])) - static_cast<s64>(GetFieldLength(current[i]));
+		}
+		return static_cast<u64>(static_cast<s64>(offset) + delta);
+	}
+
+	bool ReadOperand(std::span<const u8> internals, const SaveStateFieldConstraint::Operand& operand, u64 mapped, s64* value)
+	{
+		if (operand.size == 0 || operand.size > sizeof(u64) || mapped + operand.size > internals.size())
+			return false;
+		*value = ReadInteger(internals, mapped, operand.size, operand.is_signed != 0);
+		return true;
+	}
+
+	// Checks every recorded constraint in the state and returns where located fields lie in it.
+	bool CheckConstraints(std::span<const u8> internals, std::span<const u8> current_data,
+		const std::vector<SaveStateFieldConstraint>& constraints, const std::vector<SaveStateFieldRecord>& saved,
+		const std::vector<SaveStateFieldRecord>& current, std::vector<std::pair<SaveStateFieldConstraint::Location, u64>>* locations,
+		Error* error)
+	{
+		for (size_t i = 0; i < constraints.size(); i++)
+		{
+			const SaveStateFieldConstraint& c = constraints[i];
+			const u64 at = MapOffset(c.value.offset, saved, current);
+			switch (c.kind)
+			{
+				case SaveStateFieldConstraint::Kind::Bytes:
+				{
+					if (at + c.value.size > internals.size() || c.value.offset + c.value.size > current_data.size() ||
+						std::memcmp(internals.data() + at, current_data.data() + c.value.offset, c.value.size) != 0)
+					{
+						Error::SetStringFmt(error, "The state's internal structures hold a corrupt tag at offset {}.", at);
+						return false;
+					}
+					break;
+				}
+
+				case SaveStateFieldConstraint::Kind::Locate:
+					if (at + c.value.size > internals.size())
+					{
+						Error::SetString(error, "The state's internal structures are truncated.");
+						return false;
+					}
+					locations->emplace_back(c.location, at);
+					break;
+
+				case SaveStateFieldConstraint::Kind::Range:
+				{
+					if (c.condition.size != 0)
+					{
+						s64 condition;
+						if (!ReadOperand(internals, c.condition, MapOffset(c.condition.offset, saved, current), &condition))
+						{
+							Error::SetString(error, "The state's internal structures are truncated.");
+							return false;
+						}
+						const bool equal = (static_cast<u32>(condition) & c.condition_mask) == c.condition_value;
+						if (equal == (c.condition_negate != 0))
+							break;
+					}
+
+					s64 value, addend = 0;
+					if (!ReadOperand(internals, c.value, at, &value) ||
+						(c.addend.size != 0 && !ReadOperand(internals, c.addend, MapOffset(c.addend.offset, saved, current), &addend)))
+					{
+						Error::SetString(error, "The state's internal structures are truncated.");
+						return false;
+					}
+					const s64 total = value * c.value.scale + addend * c.addend.scale;
+					if (total < c.min || total > c.max || (c.alignment > 1 && (value % c.alignment) != 0))
+					{
+						Error::SetStringFmt(error, "The state's internal structures hold the value {} at offset {} outside [{}, {}].",
+							total, at, c.min, c.max);
+						return false;
+					}
+					break;
+				}
+			}
+		}
+		return true;
+	}
+
+	// The SIO block is a StateWrapper stream; it is read as its DoState functions read it,
+	// without changing anything.
+	bool CheckSioStream(std::span<const u8> stream)
+	{
+		StateWrapper::ReadOnlyMemoryStream input(stream.data(), static_cast<u32>(stream.size()));
+		StateWrapper sw(&input, StateWrapper::Mode::Read, g_SaveVersion);
+		return Sio0::CheckState(sw) && Sio2::CheckState(sw) && MultitapProtocol::CheckState(sw) && MultitapProtocol::CheckState(sw) &&
+			   sw.IsGood() && input.GetPosition() == stream.size();
+	}
+
+	// The internal structures are written field by field into the running VM, so they cannot be
+	// tried before loading. Instead their layout is compared with a save of the running VM: the
+	// same variable fields in the same order, identical fixed parts between them, and every
+	// variable length within its limit and matching the bytes it describes.
+	bool ValidateInternals(std::span<const u8> internals, std::span<const u8> layout_data,
+		std::vector<std::pair<SaveStateFieldConstraint::Location, u64>>* locations, Error* error)
+	{
+		if (layout_data.size() % sizeof(SaveStateFieldRecord) != 0 || layout_data.size() / sizeof(SaveStateFieldRecord) > MAX_LAYOUT_RECORDS)
+		{
+			Error::SetString(error, "The state's layout of the internal structures is malformed.");
+			return false;
+		}
+		std::vector<SaveStateFieldRecord> saved(layout_data.size() / sizeof(SaveStateFieldRecord));
+		std::memcpy(saved.data(), layout_data.data(), layout_data.size());
+
+		std::vector<u8> current_data;
+		std::vector<SaveStateFieldRecord> current;
+		std::vector<SaveStateFieldConstraint> constraints;
+		if (!SaveInternals(&current_data, &current, error, &constraints))
+			return false;
+
+		if (saved.size() != current.size())
+		{
+			Error::SetStringFmt(error, "The state's internal structures have {} variable fields, the running VM {}.", saved.size(), current.size());
+			return false;
+		}
+
+		const u32 buffsize_offset = GetGifPathOffset(&gifUnit.gifPath[0].buffSize);
+		const u32 bufflimit_offset = GetGifPathOffset(&gifUnit.gifPath[0].buffLimit);
+		const u32 cursize_offset = GetGifPathOffset(&gifUnit.gifPath[0].curSize);
+		const u32 buffer_offset = GetGifPathOffset(&gifUnit.gifPath[0].buffer);
+
+		u64 saved_end = 0;
+		u64 current_end = 0;
+		u32 gif_index = 0;
+		for (size_t i = 0; i < saved.size(); i++)
+		{
+			const SaveStateFieldRecord& field = saved[i];
+			if (field.kind != current[i].kind || field.offset < saved_end ||
+				field.offset - saved_end != current[i].offset - current_end)
+			{
+				Error::SetStringFmt(error, "The state's internal structures differ from this build at variable field {}.", i);
+				return false;
+			}
+
+			const u64 field_end = field.offset + GetFieldLength(field);
+			if (GetFieldPayload(field) > GetFieldPayloadLimit(current[i], gif_index) || field_end > internals.size())
+			{
+				Error::SetStringFmt(error, "Variable field {} of the state's internal structures exceeds its limit.", i);
+				return false;
+			}
+
+			bool consistent = true;
+			switch (field.kind)
+			{
+				case SaveStateVariableField::String:
+					consistent = (ReadValue<u32>(internals, field.offset) == field.value);
+					break;
+				case SaveStateVariableField::GifPath:
+				{
+					const Gif_Path& path = gifUnit.gifPath[gif_index];
+					consistent = ReadValue<u32>(internals, field.offset + cursize_offset) == field.value &&
+								 ReadValue<u32>(internals, field.offset + buffsize_offset) == path.buffSize &&
+								 ReadValue<u32>(internals, field.offset + bufflimit_offset) == path.buffLimit &&
+								 ReadValue<uptr>(internals, field.offset + buffer_offset) == 0;
+					gif_index++;
+					break;
+				}
+				case SaveStateVariableField::Stream:
+					consistent = CheckSioStream(internals.subspan(field.offset, field.value));
+					break;
+				case SaveStateVariableField::HostHandles:
+					consistent = (ReadValue<size_t>(internals, field.offset) == 0);
+					break;
+				case SaveStateVariableField::VifBuffer:
+					consistent = (ReadValue<u32>(internals, field.offset) == field.value);
+					break;
+			}
+			if (!consistent)
+			{
+				Error::SetStringFmt(error, "Variable field {} of the state's internal structures does not match its data.", i);
+				return false;
+			}
+
+			saved_end = field_end;
+			current_end = current[i].offset + GetFieldLength(current[i]);
+		}
+
+		if (internals.size() - saved_end != current_data.size() - current_end)
+		{
+			Error::SetString(error, "The state's internal structures end differently from this build.");
+			return false;
+		}
+		return CheckConstraints(internals, current_data, constraints, saved, current, locations, error);
+	}
+
+	// A running IPU command resumes in a switch over its command number, which only covers the
+	// commands that keep running (IDEC to PACK).
+	bool CheckIpuCommand(std::span<const u8> internals, u64 command_offset, std::span<const u8> ee_hw, Error* error)
+	{
+		const u64 control_offset = static_cast<u64>(reinterpret_cast<const u8*>(&ipuRegs.ctrl) - eeHw);
+		if (control_offset + sizeof(u32) > ee_hw.size() || command_offset + sizeof(u32) > internals.size())
+		{
+			Error::SetString(error, "The state's IPU registers are truncated.");
+			return false;
+		}
+		tIPU_CTRL control(static_cast<u32>(ReadInteger(ee_hw, control_offset, sizeof(u32), false)));
+		const u32 command = static_cast<u32>(ReadInteger(internals, command_offset, sizeof(u32), false)) >> 28;
+		if (control.BUSY && (command < SCE_IPU_IDEC || command > SCE_IPU_PACK))
+		{
+			Error::SetStringFmt(error, "The state holds a busy IPU with command {}.", command);
+			return false;
+		}
+		return true;
+	}
+
+	void SetSegmentError(Error* error, const char* what, const BaseSavestateEntry* entry)
+	{
+		Error::SetStringFmt(error, "The {} segment{}{} failed.", what, entry ? " " : "", entry ? entry->GetFilename() : "");
+	}
+} // namespace
+
+// The segments with their limits, and the lengths the internal structures and their layout have
+// in a save of the running VM.
+static bool DescribeSegments(std::vector<SaveStateMemory::Segment>* segments, u32* internals_length, u32* layout_length, Error* error)
+{
+	if (!CheckConfiguration(error))
+		return false;
+
+	std::vector<u8> internals;
+	std::vector<SaveStateFieldRecord> layout;
+	if (!SaveInternals(&internals, &layout, error))
+		return false;
+	*internals_length = static_cast<u32>(internals.size());
+	*layout_length = static_cast<u32>(layout.size() * sizeof(SaveStateFieldRecord));
+
+	u64 internals_limit = internals.size();
+	u32 gif_index = 0;
+	for (const SaveStateFieldRecord& field : layout)
+	{
+		internals_limit += GetFieldPayloadLimit(field, gif_index) - GetFieldPayload(field);
+		if (field.kind == SaveStateVariableField::GifPath)
+			gif_index++;
+	}
+	if (layout.size() > MAX_LAYOUT_RECORDS || internals_limit > std::numeric_limits<u32>::max())
+	{
+		Error::SetString(error, "The internal structures have no usable size limit.");
+		return false;
+	}
+
+	segments->clear();
+	for (const SegmentSource& source : GetSegmentSources())
+	{
+		switch (source.kind)
+		{
+			case SegmentKind::Internals:
+				segments->push_back({"internals", static_cast<u32>(internals_limit), false, false});
+				break;
+			case SegmentKind::Layout:
+				segments->push_back({"layout", static_cast<u32>(MAX_LAYOUT_RECORDS * sizeof(SaveStateFieldRecord)), false, false});
+				break;
+			case SegmentKind::Entry:
+				if (const std::span<u8> memory = source.entry->GetPagedMemory(); !memory.empty())
+				{
+					const u32 pages = static_cast<u32>(memory.size() / STATE_PAGE_SIZE);
+					segments->push_back({source.entry->GetFilename(), static_cast<u32>(GetPagedLength(pages, pages)), false, true});
+				}
+				else if (const std::optional<u32> size = source.entry->GetFixedSize())
+				{
+					segments->push_back({source.entry->GetFilename(), *size, true, false});
+				}
+				else
+				{
+					std::vector<u8> data;
+					memSavingState saver(data);
+					if (!source.entry->FreezeOut(saver) || saver.HasError())
+					{
+						SetSegmentError(error, "size measurement of the", source.entry);
+						return false;
+					}
+					segments->push_back({source.entry->GetFilename(), saver.GetCurrentPos(), true, false});
+				}
+				break;
+			case SegmentKind::ArcadeDevices:
+				segments->push_back({"arcade-devices", ACSTATE::GetSize(), true, false});
+				break;
+			case SegmentKind::AudioOutput:
+				segments->push_back({"audio-output", SPU2::GetOutputStateSize(), true, false});
+				break;
+		}
+	}
+	return true;
+}
+
+bool SaveStateMemory::GetSegments(std::vector<Segment>* segments, Error* error)
+{
+	u32 internals_length, layout_length;
+	return DescribeSegments(segments, &internals_length, &layout_length, error);
+}
+
+bool SaveStateMemory::Measure(Plan* plan, Error* error)
+{
+	std::vector<Segment> segments;
+	u32 internals_length, layout_length;
+	if (!DescribeSegments(&segments, &internals_length, &layout_length, error))
+		return false;
+
+	const std::vector<SegmentSource> sources = GetSegmentSources();
+	plan->lengths.assign(sources.size(), 0);
+	plan->page_bitmaps.assign(sources.size(), {});
+	plan->present_pages.assign(sources.size(), 0);
+	for (size_t i = 0; i < sources.size(); i++)
+	{
+		switch (sources[i].kind)
+		{
+			case SegmentKind::Internals:
+				plan->lengths[i] = internals_length;
+				break;
+			case SegmentKind::Layout:
+				plan->lengths[i] = layout_length;
+				break;
+			case SegmentKind::Entry:
+				if (const std::span<u8> memory = sources[i].entry->GetPagedMemory(); !memory.empty())
+				{
+					BuildPageBitmap(memory, &plan->page_bitmaps[i], &plan->present_pages[i]);
+					plan->lengths[i] = static_cast<u32>(GetPagedLength(static_cast<u32>(memory.size() / STATE_PAGE_SIZE), plan->present_pages[i]));
+				}
+				else
+				{
+					plan->lengths[i] = segments[i].size;
+				}
+				break;
+			case SegmentKind::ArcadeDevices:
+			case SegmentKind::AudioOutput:
+				plan->lengths[i] = segments[i].size;
+				break;
+		}
+	}
+	return true;
+}
+
+// Writes a segment into `out` and returns its length; SaveSegment() checks it against the plan.
+static bool WriteSegment(const SaveStateMemory::Plan& plan, size_t index, std::span<u8> out, u32* length, Error* error)
+{
+	const std::vector<SegmentSource> sources = GetSegmentSources();
+	const SegmentSource& source = sources[index];
+	switch (source.kind)
+	{
+		case SegmentKind::Internals:
+		{
+			// A coefficient decode suspended in its second half resumes with a table pointer that
+			// is not state; it is never saved (see ipuFreeze).
+			if (ipu_cmd.pos[5] != 0)
+			{
+				Error::SetString(error, "The IPU is in the middle of decoding video; try again in a moment.");
+				return false;
+			}
+
+			s_saved_layout.clear();
+			memSavingState saver(out);
+			saver.SetInMemoryState();
+			saver.SetLayoutRecorder(&s_saved_layout);
+			Error freeze_error;
+			if (!saver.FreezeBios() || !saver.FreezeInternals(&freeze_error) || saver.HasError() ||
+				s_saved_layout.size() > MAX_LAYOUT_RECORDS)
+			{
+				Error::SetStringFmt(error, "The internal structures could not be saved: {}", freeze_error.GetDescription());
+				return false;
+			}
+			*length = saver.GetCurrentPos();
+			NormalizeGifPaths(out.first(*length), s_saved_layout);
+			return true;
+		}
+
+		case SegmentKind::Layout:
+		{
+			const size_t size = s_saved_layout.size() * sizeof(SaveStateFieldRecord);
+			if (size > out.size())
+			{
+				SetSegmentError(error, "layout", nullptr);
+				return false;
+			}
+			std::memcpy(out.data(), s_saved_layout.data(), size);
+			*length = static_cast<u32>(size);
+			return true;
+		}
+
+		case SegmentKind::Entry:
+		{
+			if (const std::span<u8> memory = source.entry->GetPagedMemory(); !memory.empty())
+			{
+				SavePaged(memory, plan.page_bitmaps[index], plan.present_pages[index], out);
+				*length = plan.lengths[index];
+				return true;
+			}
+
+			// The GS keeps rendered data on the GPU until it is read back; the state takes the
+			// local memory only.
+			if (dynamic_cast<const SavestateEntry_GS*>(source.entry))
+			{
+				MTGS::RunOnGSThread(&GSReadbackTextureCacheForState);
+				MTGS::WaitGS(false);
+			}
+
+			memSavingState saver(out);
+			if (!source.entry->FreezeOut(saver) || saver.HasError())
+			{
+				SetSegmentError(error, "save of the", source.entry);
+				return false;
+			}
+			*length = saver.GetCurrentPos();
+			if (dynamic_cast<const SavestateEntry_SPU2*>(source.entry))
+				SPU2::NormalizeFreezeData(out.first(*length));
+			return true;
+		}
+
+		case SegmentKind::ArcadeDevices:
+		{
+			const u32 size = ACSTATE::GetSize();
+			if (size > out.size())
+			{
+				SetSegmentError(error, "arcade device", nullptr);
+				return false;
+			}
+			ACSTATE::Save(out.first(size));
+			*length = size;
+			return true;
+		}
+
+		case SegmentKind::AudioOutput:
+		{
+			const u32 size = SPU2::GetOutputStateSize();
+			if (size > out.size())
+			{
+				SetSegmentError(error, "audio output", nullptr);
+				return false;
+			}
+			SPU2::SaveOutputState(out.first(size));
+			*length = size;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool SaveStateMemory::SaveSegment(const Plan& plan, size_t index, std::span<u8> out, Error* error)
+{
+	if (index >= plan.lengths.size() || out.size() != plan.lengths[index])
+	{
+		Error::SetStringFmt(error, "Segment {} does not match the measured state.", index);
+		return false;
+	}
+
+	u32 length = 0;
+	if (!WriteSegment(plan, index, out, &length, error))
+		return false;
+
+	// The plan describes the VM as it was measured; a different length means it has changed.
+	if (length != plan.lengths[index])
+	{
+		Console.ErrorFmt("Segment {} has {} bytes, {} were measured", index, length, plan.lengths[index]);
+		Error::SetString(error, "The VM changed after the state was measured.");
+		return false;
+	}
+	return true;
+}
+
+bool SaveStateMemory::Validate(std::span<const std::span<const u8>> segments, Error* error)
+{
+	std::vector<Segment> expected;
+	if (!GetSegments(&expected, error))
+		return false;
+
+	if (segments.size() != expected.size())
+	{
+		Error::SetStringFmt(error, "The state has {} segments, the running VM {}.", segments.size(), expected.size());
+		return false;
+	}
+	const std::vector<SegmentSource> segment_sources = GetSegmentSources();
+	for (size_t i = 0; i < segments.size(); i++)
+	{
+		if (expected[i].paged)
+		{
+			if (!ValidatePaged(segments[i], segment_sources[i].entry->GetPagedMemory().size(), expected[i].name.c_str(), error))
+				return false;
+			continue;
+		}
+		if (expected[i].exact ? (segments[i].size() != expected[i].size) : (segments[i].size() > expected[i].size))
+		{
+			Error::SetStringFmt(error, "The state's {} segment holds {} bytes, the running VM {} {}.", expected[i].name,
+				segments[i].size(), expected[i].exact ? "needs" : "allows at most", expected[i].size);
+			return false;
+		}
+	}
+
+	const std::vector<SegmentSource> sources = GetSegmentSources();
+	std::vector<std::pair<SaveStateFieldConstraint::Location, u64>> locations;
+	std::span<const u8> ee_hw;
+	for (size_t i = 0; i < sources.size(); i++)
+	{
+		if (sources[i].kind == SegmentKind::Entry && std::strcmp(sources[i].entry->GetFilename(), "eeHwRegs.bin") == 0)
+			ee_hw = segments[i];
+	}
+	for (size_t i = 0; i < sources.size(); i++)
+	{
+		const SegmentSource& source = sources[i];
+		switch (source.kind)
+		{
+			case SegmentKind::Internals:
+				if (!ValidateInternals(segments[i], segments[i + 1], &locations, error))
+					return false;
+				break;
+			case SegmentKind::Layout:
+				break;
+			case SegmentKind::Entry:
+				if (dynamic_cast<const SavestateEntry_SPU2*>(source.entry) && !SPU2::ValidateFreezeData(segments[i], error))
+					return false;
+				if (dynamic_cast<const SavestateEntry_GS*>(source.entry) && !GSValidateFreezeData(segments[i], error))
+					return false;
+				if (dynamic_cast<const SavestateEntry_PAD*>(source.entry) && !SavestateEntry_PAD::Validate(segments[i], error))
+					return false;
+				break;
+			case SegmentKind::ArcadeDevices:
+				if (!ACSTATE::Validate(segments[i], error))
+					return false;
+				break;
+			case SegmentKind::AudioOutput:
+				if (!SPU2::ValidateOutputState(segments[i], error))
+					return false;
+				break;
+		}
+	}
+
+	for (const auto& [location, offset] : locations)
+	{
+		if (location == SaveStateFieldConstraint::Location::IpuCommand && !CheckIpuCommand(segments[0], offset, ee_hw, error))
+			return false;
+	}
+	return true;
+}
+
+bool SaveStateMemory::Load(std::span<const std::span<const u8>> segments, Error* error)
+{
+	const std::vector<SegmentSource> sources = GetSegmentSources();
+	if (segments.size() != sources.size())
+	{
+		Error::SetString(error, "The state does not match the running VM.");
+		return false;
+	}
+
+	// From here on the VM holds parts of the state, so its persistent data cannot be trusted
+	// until everything has been restored.
+	VMManager::Internal::SetPersistentDataUntrusted(true);
+	PreLoadPrep();
+
+	for (size_t i = 0; i < sources.size(); i++)
+	{
+		const SegmentSource& source = sources[i];
+		bool loaded = true;
+		switch (source.kind)
+		{
+			case SegmentKind::Internals:
+			{
+				memLoadingState state(segments[i]);
+				state.SetInMemoryState();
+				Error freeze_error;
+				loaded = state.FreezeBios() && state.FreezeInternals(&freeze_error) && !state.HasError() &&
+						 state.GetCurrentPos() == segments[i].size();
+				if (!loaded)
+					Error::SetStringFmt(error, "The internal structures could not be restored: {}", freeze_error.GetDescription());
+				break;
+			}
+			case SegmentKind::Layout:
+				break;
+			case SegmentKind::Entry:
+				if (const std::span<u8> memory = source.entry->GetPagedMemory(); !memory.empty())
+				{
+					LoadPaged(segments[i], memory);
+					break;
+				}
+				loaded = source.entry->LoadFromMemory(segments[i]);
+				if (!loaded)
+					SetSegmentError(error, "restore of the", source.entry);
+				break;
+			case SegmentKind::ArcadeDevices:
+				ACSTATE::Load(segments[i]);
+				break;
+			case SegmentKind::AudioOutput:
+				SPU2::LoadOutputState(segments[i]);
+				break;
+		}
+		if (!loaded)
+			return false;
+	}
+
+	// The VU1 thread receives VU1 memory and programs only now that they hold the state.
+	mtvuRebuildAfterStateLoad();
+	PostLoadPrep();
+	if (THREAD_VU1)
+		vu1Thread.WaitVU();
+	MTGS::WaitGS(false);
+
+	VMManager::Internal::SetPersistentDataUntrusted(false);
 	return true;
 }
 

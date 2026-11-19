@@ -68,6 +68,10 @@ namespace Pad
 
 	bool Freeze(StateWrapper& sw);
 
+	/// Reads a saved block as Freeze() does into scratch pads of the saved types, without
+	/// changing the connected controllers, and checks that it is well formed.
+	bool CheckState(StateWrapper& sw);
+
 	// Sets the state of the specified macro button.
 	void SetMacroButtonState(InputBindingKey& key, u32 pad, u32 index, bool state);
 	void UpdateMacroButtons();

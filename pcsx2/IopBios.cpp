@@ -1530,6 +1530,7 @@ bool SaveStateBase::handleFreeze()
 
 	const int firstfd = R3000A::ioman::firstfd;
 	size_t handleCount = EmuConfig.HostFs ? R3000A::handles.size() : 0;
+	NoteVariableField(SaveStateVariableField::HostHandles, static_cast<u32>(handleCount));
 	Freeze(handleCount);
 
 	if (!EmuConfig.HostFs) //if hostfs isn't enabled, skip loading/saving file handles

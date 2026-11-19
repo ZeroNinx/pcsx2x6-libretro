@@ -40,6 +40,26 @@ namespace ACATAPI
     bool has_pio_write();
     bool dma_read(u32* pMem, int size);
 
+    // PIO, chunk and DMA transfers of the current packet command, part of a save state.
+    struct SavedState
+    {
+        u8 pio_buf[65536];
+        u32 pio_len;
+        u32 pio_pos;
+        u32 pio_chunk;
+        s32 pio_chunk_busy;
+        u8 pio_write_buf[65536];
+        u32 pio_write_len;
+        u32 pio_write_pos;
+        u8 dma_buf[2048 * 128];
+        u32 dma_len;
+        u8 mode_page_01[12];
+        u8 mode_page_01_set;
+    };
+    void SaveState(SavedState* state);
+    bool ValidateState(const SavedState& state);
+    void LoadState(const SavedState& state);
+
     enum CONSTANTS {
         DVD_SECTORSIZE = 0x800,
     };

@@ -46,6 +46,9 @@ void FileMcd_Swap();
 s32 FileMcd_IsPresent(uint port, uint slot);
 void FileMcd_GetSizeInfo(uint port, uint slot, McdSizeInfo* outways);
 bool FileMcd_IsPSX(uint port, uint slot);
+/// Hash of the whole current content of a file memory card (the dongle among them), read from
+/// the open file. Empty when the slot holds no file card or the content cannot be read.
+std::optional<u64> FileMcd_GetContentFingerprint(uint port, uint slot);
 s32 FileMcd_Read(uint port, uint slot, u8* dest, u32 adr, int size);
 s32 FileMcd_Save(uint port, uint slot, const u8* src, u32 adr, int size);
 s32 FileMcd_EraseBlock(uint port, uint slot, u32 adr);

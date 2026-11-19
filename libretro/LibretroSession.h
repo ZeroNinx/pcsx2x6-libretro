@@ -86,6 +86,30 @@ namespace LibretroSession
 	/// while a memory card is being written, in which case the session continues unchanged.
 	bool Reset();
 
+	/// Outcome of a state operation.
+	enum class StateResult
+	{
+		Done,
+		/// Refused before anything changed; the session continues unchanged.
+		Rejected,
+		/// A load failed after it had started changing the VM. The VM is left stopped at the
+		/// point the load began and must not run again; the session has to be ended.
+		Failed,
+	};
+
+	/// Runs `work` on the CPU thread at the point where save states are taken and restored:
+	/// outside VM execution, after the frame the VM last completed, with the VU and GS threads
+	/// idle. A running VM leaves execution at its next safe point first; no frame is run for it.
+	/// The VM keeps its running or paused state and runs again only on a new frame request.
+	/// After a load that is Done, the session drops output and input of the replaced state:
+	/// its unpresented frame and audio, the held host input levels, and armed Coin/Test edges.
+	StateResult RunStateOperation(bool loads, const std::function<StateResult(Error*)>& work, Error* error);
+
+	/// Identifies the VM state between changes: it changes whenever the VM completes a frame,
+	/// a state load or a reset succeeds, or a session starts or ends. Read and changed under the
+	/// session lock; work run by RunStateOperation() reads it while the VM cannot change.
+	u64 GetStateGeneration();
+
 	/// Draws opaque black into `output_slot` without running the VM, for a frame request that
 	/// produced no image while nothing has been shown yet. Returns false, leaving `frame`
 	/// untouched, without an active session or when the image cannot be drawn.

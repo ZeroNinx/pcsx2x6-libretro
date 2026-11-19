@@ -40,6 +40,10 @@ public:
 	void SoftReset();
 	bool DoState(StateWrapper& sw);
 
+	/// Reads a saved block as DoState() does, without changing anything, and checks that the
+	/// port and slot it selects exist.
+	static bool CheckState(StateWrapper& sw);
+
 	void SetAcknowledge(bool ack);
 	void Interrupt(Sio0Interrupt sio0Interrupt);
 

@@ -100,6 +100,12 @@ void MultitapProtocol::FullReset()
 	this->currentMemcardSlot = 0;
 }
 
+bool MultitapProtocol::CheckState(StateWrapper& sw)
+{
+	MultitapProtocol scratch;
+	return scratch.DoState(sw) && scratch.currentPadSlot < SIO::SLOTS && scratch.currentMemcardSlot < SIO::SLOTS;
+}
+
 bool MultitapProtocol::DoState(StateWrapper& sw)
 {
 	if (!sw.DoMarker("Multitap"))

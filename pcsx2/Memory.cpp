@@ -1170,6 +1170,7 @@ bool SaveStateBase::memFreeze(Error* error)
 	Freeze(s_dve_regs);
 	Freeze(s_ba_command_executing);
 	Freeze(s_ba_error_detected);
+	NoteRange(s_ba_current_reg, 0, static_cast<s64>(std::size(s_dve_regs)) - 1);
 	Freeze(s_ba_current_reg);
 
 	bool extra_memory = s_extra_memory;

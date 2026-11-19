@@ -329,6 +329,7 @@ set(pcsx2DEV9Sources
 	DEV9/ACUART.cpp
 	DEV9/ACUART_GLUE.cpp
 	DEV9/ACCORE.cpp
+	DEV9/ACSTATE.cpp
 	)
 
 # DEV9 headers
@@ -336,6 +337,7 @@ set(pcsx2DEV9Headers
 	DEV9/AdapterUtils.h
 	DEV9/ATA/ATA.h
 	DEV9/ATA/HddCreate.h
+	DEV9/ACSTATE.h
 	DEV9/DEV9.h
 	DEV9/InternalServers/DHCP_Logger.h
 	DEV9/InternalServers/DHCP_Server.h

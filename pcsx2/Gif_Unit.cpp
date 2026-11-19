@@ -220,10 +220,40 @@ bool SaveStateBase::gifPathFreeze(u32 path)
 		}
 	}
 	u8* bufferPtr = gifPath.buffer; // Backup current buffer ptr
+	const u32 buffSize = gifPath.buffSize;
+	const u32 buffLimit = gifPath.buffLimit;
+	// Fake packets wait for the VU1 thread, which only runs with MTVU.
+	if (!THREAD_VU1)
+		NoteRange(gifPath.mtvu.fakePackets, 0, 0);
 	Freeze(gifPath.mtvu.fakePackets);
+	NoteVariableField(SaveStateVariableField::GifPath, gifPath.curSize);
+	// The current tag and packet lie within the buffered data; the path index and state are
+	// those of this path, and a parsed tag describes at most 16 registers.
+	NoteRange(FieldOf(gifPath, gifPath.curOffset), -std::numeric_limits<s64>::max(), 0, FieldOf(gifPath, gifPath.curSize, -1));
+	NoteRange(FieldOf(gifPath, gifPath.gsPack.size), -std::numeric_limits<s64>::max(), 0, FieldOf(gifPath, gifPath.curOffset, -1));
+	NoteRange(FieldOf(gifPath, gifPath.gsPack.offset), 0, gifPath.buffSize, FieldOf(gifPath, gifPath.gsPack.size));
+	NoteRange(gifPath, gifPath.idx, path, path);
+	NoteRange(gifPath, gifPath.state, GIF_PATH_IDLE, GIF_PATH_WAIT);
+	NoteRange(gifPath, gifPath.gifTag.isValid, 0, 1);
+	NoteRange(gifPath, gifPath.gifTag.hasAD, 0, 1);
+	When(NoteRange(gifPath, gifPath.gifTag.nRegs, 1, 16), FieldOf(gifPath, gifPath.gifTag.isValid), 0xFF, 1);
+	When(NoteRange(FieldOf(gifPath, gifPath.gifTag.nRegIdx), -std::numeric_limits<s64>::max(), -1, FieldOf(gifPath, gifPath.gifTag.nRegs, -1)),
+		FieldOf(gifPath, gifPath.gifTag.isValid), 0xFF, 1);
+	for (const u8& reg : gifPath.gifTag.regs)
+		NoteRange(gifPath, reg, 0, 15);
 	FreezeMem(&gifPath, sizeof(gifPath) - sizeof(gifPath.mtvu));
-	FreezeMem(bufferPtr, gifPath.curSize);
 	gifPath.buffer = bufferPtr;
+	if (!IsSaving() && (m_error || gifPath.curSize > buffSize))
+	{
+		// The packet data must fit the buffer this VM allocated; nothing beyond it is read.
+		Console.Error("Gif path %u: the state holds %u bytes for a %u-byte buffer", path, gifPath.curSize, buffSize);
+		gifPath.buffSize = buffSize;
+		gifPath.buffLimit = buffLimit;
+		gifPath.curSize = 0;
+		m_error = true;
+		return false;
+	}
+	FreezeMem(bufferPtr, gifPath.curSize);
 	if (!IsSaving())
 	{
 		gifPath.readAmount = 0;
@@ -245,6 +275,8 @@ bool SaveStateBase::gifFreeze()
 	Freeze(gifUnit.stat);
 	Freeze(gifUnit.gsSIGNAL);
 	Freeze(gifUnit.gsFINISH);
+	// The transfer type names its log string by its second byte (0 to 6).
+	NoteRange(gifUnit.lastTranType, 0, 0x6FF);
 	Freeze(gifUnit.lastTranType);
 	gifPathFreeze(GIF_PATH_1);
 	gifPathFreeze(GIF_PATH_2);

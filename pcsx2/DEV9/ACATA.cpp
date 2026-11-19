@@ -457,3 +457,24 @@ u16 ACATA::R_STATUS;
 u16 ACATA::R_COMMAND;
 u16 ACATA::R_STATUS_ALT;
 u16 ACATA::R_CONTROL;
+
+void ACATA::SavePioState(PioState* state)
+{
+	static_assert(sizeof(state->buffer) == sizeof(ata_pio_buf));
+	std::memcpy(state->buffer, ata_pio_buf, sizeof(ata_pio_buf));
+	state->length = ata_pio_len;
+	state->position = ata_pio_pos;
+}
+
+bool ACATA::ValidatePioState(const PioState& state)
+{
+	// Accesses are guarded by the position lying below the length; the length bounds them.
+	return state.length <= sizeof(ata_pio_buf);
+}
+
+void ACATA::LoadPioState(const PioState& state)
+{
+	std::memcpy(ata_pio_buf, state.buffer, sizeof(ata_pio_buf));
+	ata_pio_len = state.length;
+	ata_pio_pos = state.position;
+}

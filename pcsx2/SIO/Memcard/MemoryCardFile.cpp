@@ -183,6 +183,7 @@ public:
 	s32 Save(uint slot, const u8* src, u32 adr, int size);
 	s32 EraseBlock(uint slot, u32 adr);
 	u64 GetCRC(uint slot);
+	std::optional<u64> GetContentFingerprint(uint slot);
 
 protected:
 	bool Seek(std::FILE* f, u32 adr);
@@ -563,6 +564,31 @@ u64 FileMemoryCard::GetCRC(uint slot)
 	return retval;
 }
 
+std::optional<u64> FileMemoryCard::GetContentFingerprint(uint slot)
+{
+	std::FILE* mcfp = m_file[slot];
+	const s64 size = m_fileSize[slot];
+	if (!mcfp || size < 0 || !Seek(mcfp, 0))
+		return std::nullopt;
+
+	// FNV-1a over every byte of the file, in blocks.
+	u64 hash = 1469598103934665603ull;
+	std::vector<u8> block(64 * 1024);
+	for (s64 remaining = size; remaining > 0;)
+	{
+		const size_t length = static_cast<size_t>(std::min<s64>(remaining, static_cast<s64>(block.size())));
+		if (std::fread(block.data(), 1, length, mcfp) != length)
+			return std::nullopt;
+		for (size_t i = 0; i < length; i++)
+		{
+			hash ^= block[i];
+			hash *= 1099511628211ull;
+		}
+		remaining -= static_cast<s64>(length);
+	}
+	return hash;
+}
+
 // --------------------------------------------------------------------------------------
 //  MemoryCard Component API Bindings
 // --------------------------------------------------------------------------------------
@@ -795,6 +821,14 @@ u64 FileMcd_GetCRC(uint port, uint slot)
 		default:
 			return 0;
 	}
+}
+
+std::optional<u64> FileMcd_GetContentFingerprint(uint port, uint slot)
+{
+	const uint combinedSlot = FileMcd_ConvertToSlot(port, slot);
+	if (EmuConfig.Mcd[combinedSlot].Type != MemoryCardType::File)
+		return std::nullopt;
+	return Mcd::impl.GetContentFingerprint(combinedSlot);
 }
 
 void FileMcd_NextFrame(uint port, uint slot)

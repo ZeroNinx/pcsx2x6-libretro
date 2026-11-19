@@ -301,6 +301,12 @@ u8 Sio0::Memcard(u8 value)
 	return 0xff;
 }
 
+bool Sio0::CheckState(StateWrapper& sw)
+{
+	Sio0 scratch;
+	return scratch.DoState(sw) && scratch.port < SIO::PORTS && scratch.slot < SIO::SLOTS;
+}
+
 bool Sio0::DoState(StateWrapper& sw)
 {
 	if (!sw.DoMarker("Sio0"))

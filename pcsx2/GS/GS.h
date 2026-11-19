@@ -111,6 +111,11 @@ void GSUpdateConfig(const Pcsx2Config::GSOptions& new_config);
 void GSSetSoftwareRendering(bool software_renderer, GSInterlaceMode new_interlace);
 bool GSSaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspect, bool crop_borders,
 	u32* width, u32* height, std::vector<u32>* pixels);
+/// Flushes pending drawing and reads data the renderer holds on the GPU back into local memory,
+/// so that a save state contains it. GS thread only.
+void GSReadbackTextureCacheForState();
+/// Checks a saved GS block before it is loaded.
+bool GSValidateFreezeData(std::span<const u8> data, Error* error);
 /// Display aspect ratio of the current output, or 0 without a renderer. GS thread only.
 float GSGetDisplayAspectRatio();
 /// Size of the current output image as GSSaveSnapshotToMemory() reads it without a target size,

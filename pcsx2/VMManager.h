@@ -286,6 +286,11 @@ namespace VMManager
 	/// Internal callbacks, implemented in the emu core.
 	namespace Internal
 	{
+		/// Marks the persistent data the VM writes back on shutdown, SRAM and BIOS NVRAM, as
+		/// untrusted while a state is only partly restored. A VM shut down in that condition
+		/// skips writing them back. A new VM starts trusted.
+		void SetPersistentDataUntrusted(bool untrusted);
+
 		/// Checks settings version. Call once on startup. If it returns false, you should prompt the user to reset.
 		bool CheckSettingsVersion();
 

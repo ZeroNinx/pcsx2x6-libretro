@@ -98,5 +98,16 @@ namespace ACATA
         int IO_CloseImage();
     }
     void SetEnv(std::string ata_img_path, std::string ata_img_filename, std::string Media);
+
+    // PIO data of the current command, part of a save state.
+    struct PioState
+    {
+        u8 buffer[131072];
+        u32 length;
+        u32 position; // in 16-bit words
+    };
+    void SavePioState(PioState* state);
+    bool ValidatePioState(const PioState& state);
+    void LoadPioState(const PioState& state);
     void SetImgPath(const char* S);
 }

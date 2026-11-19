@@ -121,3 +121,7 @@ private:
 };
 
 extern VU_Thread vu1Thread;
+
+/// After a state loaded with deferred MTVU rebuild: sends the restored VU1 memory, programs and
+/// registers to the VU1 thread and applies the state's thread counters.
+extern void mtvuRebuildAfterStateLoad();

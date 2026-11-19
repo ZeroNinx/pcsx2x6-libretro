@@ -42,6 +42,16 @@ static void MTVU_Unpack(void* data, VIFregisters& vifRegs)
 		_nVifUnpack(1, (u8*)data, vifRegs.mode, isFill);
 }
 
+// Counters of a state whose VU1 thread is rebuilt after the whole state has been restored.
+static struct
+{
+	u32 vuCycles[4];
+	u32 mtvuInterrupts;
+	u64 gsSignal;
+	u64 gsLabel;
+	u32 vuCycleIdx;
+} s_deferred_mtvu;
+
 // Called on Saving/Loading states...
 bool SaveStateBase::mtvuFreeze()
 {
@@ -49,6 +59,19 @@ bool SaveStateBase::mtvuFreeze()
 		return false;
 
 	pxAssert(vu1Thread.IsDone());
+	if (!IsSaving() && m_in_memory_state)
+	{
+		// VU1 memory and programs are restored after this, so the thread must not receive
+		// them yet; mtvuRebuildAfterStateLoad() sends them and applies these counters.
+		for (u32& cycles : s_deferred_mtvu.vuCycles)
+			Freeze(cycles);
+		Freeze(s_deferred_mtvu.mtvuInterrupts);
+		Freeze(s_deferred_mtvu.gsSignal);
+		Freeze(s_deferred_mtvu.gsLabel);
+		Freeze(s_deferred_mtvu.vuCycleIdx);
+		return IsOkay();
+	}
+
 	if (!IsSaving())
 	{
 		vu1Thread.Reset();
@@ -75,8 +98,32 @@ bool SaveStateBase::mtvuFreeze()
 	Freeze(gsLabel);
 	vu1Thread.gsLabel.store(gsLabel);
 
+	// The index selects one of the four cycle counts.
+	NoteRange(vu1Thread.vuCycleIdx, 0, 3);
 	Freeze(vu1Thread.vuCycleIdx);
 	return IsOkay();
+}
+
+void mtvuRebuildAfterStateLoad()
+{
+	pxAssert(vu1Thread.IsDone());
+	if (THREAD_VU1)
+	{
+		vu1Thread.Reset();
+		vu1Thread.WriteCol(vif1);
+		vu1Thread.WriteRow(vif1);
+		vu1Thread.WriteMicroMem(0, VU1.Micro, 0x4000);
+		vu1Thread.WriteDataMem(0, VU1.Mem, 0x4000);
+		vu1Thread.WriteVIRegs(&VU1.VI[0]);
+		vu1Thread.WriteVFRegs(&VU1.VF[0]);
+	}
+
+	for (size_t i = 0; i < std::size(s_deferred_mtvu.vuCycles); i++)
+		vu1Thread.vuCycles[i].store(s_deferred_mtvu.vuCycles[i]);
+	vu1Thread.mtvuInterrupts.store(s_deferred_mtvu.mtvuInterrupts);
+	vu1Thread.gsSignal.store(s_deferred_mtvu.gsSignal);
+	vu1Thread.gsLabel.store(s_deferred_mtvu.gsLabel);
+	vu1Thread.vuCycleIdx = s_deferred_mtvu.vuCycleIdx;
 }
 
 VU_Thread::VU_Thread()

@@ -10,6 +10,8 @@
 #include "GS/GS.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "MTGS.h"
+#include "MTVU.h"
+#include "R5900.h"
 #include "VMManager.h"
 
 #include "common/Console.h"
@@ -41,6 +43,17 @@ namespace
 		Advance,
 		Stop,
 		StateChanged,
+		StateRequest,
+	};
+
+	// A state operation the frontend thread waits for. The work and error belong to the
+	// waiting frontend thread, which keeps them alive until the result is set.
+	struct StateRequest
+	{
+		bool loads = false;
+		const std::function<LibretroSession::StateResult(Error*)>* work = nullptr;
+		Error* error = nullptr;
+		std::optional<LibretroSession::StateResult> result;
 	};
 
 	enum class SessionState
@@ -108,6 +121,13 @@ namespace
 	std::array<bool, LibretroSession::INPUT_PORTS> s_unapplied_device_changes = {};
 	// Whether the latest completed request advanced the VM to a vsync.
 	bool s_request_advanced = false;
+	// The pending state operation, if any.
+	std::optional<StateRequest> s_state_request;
+	// Changes with every change of the VM state; see GetStateGeneration().
+	u64 s_state_generation = 0;
+	// CPU thread only: whether VMManager::Execute() is on the stack, so that a state request
+	// first has to leave it.
+	bool s_executing = false;
 	// CPU thread only: whether the VM may run to its next vsync. Only a frame request grants
 	// this, so starting, resetting or resuming the VM never runs a frame nobody requested.
 	bool s_frame_granted = false;
@@ -187,16 +207,61 @@ static void FinishBoot(bool succeeded, std::string error)
 	s_cv.notify_all();
 }
 
+static bool HasPendingStateRequest()
+{
+	return s_state_request.has_value() && !s_state_request->result.has_value();
+}
+
+// CPU thread, outside VM execution: carries out the pending state request. The VM stays in its
+// running or paused state; a running VM waits for a new frame grant before it runs.
+static void HandleStateRequest(std::unique_lock<std::mutex>& lock)
+{
+	const StateRequest request = *s_state_request;
+	lock.unlock();
+
+	if (THREAD_VU1)
+		vu1Thread.WaitVU();
+	MTGS::WaitGS(false);
+
+	const LibretroSession::StateResult result = (*request.work)(request.error);
+	if (request.loads && result == LibretroSession::StateResult::Done)
+	{
+		// The replaced state's held input and armed edges, and its output not yet taken by
+		// the frontend, do not carry over.
+		LibretroInput::Reset();
+		std::unique_lock output_lock(s_mutex);
+		s_state_generation++;
+		LibretroAudio::DrainCommitted(&s_published_audio);
+		s_published_audio.discarded_frames += s_published_audio.GetFrameCount();
+		s_published_audio.data.clear();
+		s_frame_published = false;
+		s_capture_failures = 0;
+	}
+	s_frame_granted = false;
+
+	lock.lock();
+	s_state_request->result = result;
+	s_cv.notify_all();
+}
+
 // While paused, the VM does not reach a vsync, so work and stop requests are served here.
 // Frame requests complete without advancing the VM: the frontend presents the last frame
 // again and receives no audio.
 static void WaitWhilePaused()
 {
 	std::unique_lock lock(s_mutex);
-	s_cv.wait(lock, []() { return s_stop_requested || !s_cpu_work.empty() || s_requested_frames > s_completed_frames; });
+	s_cv.wait(lock, []() {
+		return s_stop_requested || !s_cpu_work.empty() || HasPendingStateRequest() || s_requested_frames > s_completed_frames;
+	});
 	if (!s_cpu_work.empty())
 	{
 		RunQueuedWork(lock);
+		return;
+	}
+
+	if (HasPendingStateRequest())
+	{
+		HandleStateRequest(lock);
 		return;
 	}
 
@@ -217,6 +282,7 @@ static void WaitWhilePaused()
 // No frame, request or input of a session may outlive it. Requires s_mutex.
 static void ResetFrameState()
 {
+	s_state_generation++;
 	s_requested_frames = 0;
 	s_completed_frames = 0;
 	s_requested_input = {};
@@ -255,6 +321,16 @@ static FrameRequestWait WaitForFrameRequest(std::unique_lock<std::mutex>& lock)
 		if (VMManager::GetState() != VMState::Running)
 			return FrameRequestWait::StateChanged;
 
+		if (HasPendingStateRequest())
+		{
+			// Inside execution the request is only taken once the VM has left it.
+			if (s_executing)
+				return FrameRequestWait::StateRequest;
+
+			HandleStateRequest(lock);
+			continue;
+		}
+
 		if (s_requested_frames > s_completed_frames)
 		{
 			s_frame_input = s_requested_input;
@@ -286,6 +362,12 @@ static bool AwaitFrameGrant()
 
 	if (wait == FrameRequestWait::Stop)
 		VMManager::SetState(VMState::Stopping);
+	else if (wait == FrameRequestWait::StateRequest)
+	{
+		// The current event finishes, so the vsync completes as usual, before execution
+		// returns to the session loop, where the request is served without a frame grant.
+		Cpu->ExitExecution();
+	}
 	return false;
 }
 
@@ -297,6 +379,7 @@ static void FinishReset()
 	s_frame_granted = false;
 
 	std::unique_lock lock(s_mutex);
+	s_state_generation++;
 	// Audio SPU2 committed after the last completed frame belongs to the run that ended.
 	LibretroAudio::DrainCommitted(&s_published_audio);
 	s_published_audio.discarded_frames += s_published_audio.GetFrameCount();
@@ -422,7 +505,11 @@ static void RunSession(const VMBootParameters& boot_params)
 				if (!s_frame_granted)
 					s_frame_granted = AwaitFrameGrant();
 				if (s_frame_granted)
+				{
+					s_executing = true;
 					VMManager::Execute();
+					s_executing = false;
+				}
 				break;
 
 			case VMState::Resetting:
@@ -702,6 +789,41 @@ bool LibretroSession::Reset()
 	return completed;
 }
 
+LibretroSession::StateResult LibretroSession::RunStateOperation(
+	bool loads, const std::function<StateResult(Error*)>& work, Error* error)
+{
+	std::unique_lock lock(s_mutex);
+	if (s_session_state != SessionState::Active)
+	{
+		Error::SetString(error, "No content is running.");
+		return StateResult::Rejected;
+	}
+
+	s_state_request.emplace();
+	s_state_request->loads = loads;
+	s_state_request->work = &work;
+	s_state_request->error = error;
+	s_cv.notify_all();
+
+	WaitWithDiagnostics(lock, loads ? "the state load" : "the state save",
+		[]() { return s_state_request->result.has_value() || s_session_state != SessionState::Active; });
+
+	const std::optional<StateResult> result = s_state_request->result;
+	s_state_request.reset();
+	if (!result.has_value())
+	{
+		Error::SetString(error, "The VM session ended before the state operation ran.");
+		return StateResult::Rejected;
+	}
+	return *result;
+}
+
+u64 LibretroSession::GetStateGeneration()
+{
+	std::unique_lock lock(s_mutex);
+	return s_state_generation;
+}
+
 bool LibretroSession::DrawBlackFrame(u32 output_slot, Frame* frame)
 {
 	if (!IsActive())
@@ -845,6 +967,8 @@ void LibretroSession::PumpCPUThread()
 	s_vsync_frequency = vsync_frequency;
 	// The audio up to this vsync belongs to the frame it completes.
 	LibretroAudio::DrainCommitted(&s_published_audio);
+	// The VM ran to this vsync, whether or not the frame completes a request.
+	s_state_generation++;
 	if (s_requested_frames > s_completed_frames)
 	{
 		s_completed_frames++;

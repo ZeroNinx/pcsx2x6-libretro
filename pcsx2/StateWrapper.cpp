@@ -53,7 +53,11 @@ void StateWrapper::Do(std::string* value_ptr)
 	u32 length = static_cast<u32>(value_ptr->length());
 	Do(&length);
 	if (m_mode == Mode::Read)
+	{
+		if (!CanRead(length, 1))
+			return;
 		value_ptr->resize(length);
+	}
 	DoBytes(&(*value_ptr)[0], length);
 	value_ptr->resize(std::strlen(&(*value_ptr)[0]));
 }
@@ -99,6 +103,11 @@ u32 StateWrapper::ReadOnlyMemoryStream::Write(const void* buf, u32 count)
 u32 StateWrapper::ReadOnlyMemoryStream::GetPosition()
 {
 	return m_buf_position;
+}
+
+u32 StateWrapper::ReadOnlyMemoryStream::GetRemaining()
+{
+	return m_buf_length - m_buf_position;
 }
 
 bool StateWrapper::ReadOnlyMemoryStream::SeekAbsolute(u32 pos)
@@ -163,6 +172,11 @@ u32 StateWrapper::MemoryStream::GetPosition()
 	return m_buf_position;
 }
 
+u32 StateWrapper::MemoryStream::GetRemaining()
+{
+	return m_buf_length - m_buf_position;
+}
+
 bool StateWrapper::MemoryStream::SeekAbsolute(u32 pos)
 {
 	if (pos > m_buf_length)
@@ -225,6 +239,11 @@ u32 StateWrapper::VectorMemoryStream::Write(const void* buf, u32 count)
 u32 StateWrapper::VectorMemoryStream::GetPosition()
 {
 	return m_buf_position;
+}
+
+u32 StateWrapper::VectorMemoryStream::GetRemaining()
+{
+	return static_cast<u32>(m_buf.size()) - m_buf_position;
 }
 
 bool StateWrapper::VectorMemoryStream::SeekAbsolute(u32 pos)

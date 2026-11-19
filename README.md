@@ -6,6 +6,8 @@ A libretro core project for PCSX2x6's NAMCO System 246 and System 256 arcade emu
 
 This is an experimental Windows x86-64 core. It runs arcade VMs on Vulkan and hands each frame to the frontend as a Vulkan image, at the GS output dimensions and display aspect ratio. Stereo audio output and two-player RetroPad input for JVS fighting layouts and basic digital drum controls are connected.
 
+In-memory save states are supported through RetroArch's ordinary manual, automatic and undo save-state paths. A state loads only into the same core build and content with the same key settings, including BIOS, VU1 thread (MTVU), internal resolution and patches; other states are rejected without changing the running game. Save states do not restore dongles, save cards or BIOS companion files, and a state is rejected when those files have changed since it was saved. Rewind, run-ahead and netplay are not supported.
+
 ## Requirements
 
 The frontend must provide a Vulkan video driver that supports libretro Vulkan context negotiation version 2; there is no software video fallback. RetroArch 1.22.2 switches to its Vulkan driver when this core is loaded, whatever video driver is configured. A frontend without Vulkan context negotiation version 2 cannot load the core.
@@ -45,7 +47,7 @@ BIOS files are loaded directly from `<system>/pcsx2x6/bios/`; their `.nvm`/`.mec
 
 Both ports use RetroPad. For fighting layouts, the four face buttons follow x6's PS2 positions: Square → Y, Cross → B, Circle → A, Triangle → X. Directions and Start retain their usual meanings. Select inserts a coin, L3 is Service, and port 1 R3 toggles Test Mode. In Test Mode, use the game's menu to exit and save.
 
-In drum mode, Left = left Ka, Down = left Don, B = right Don, A = right Ka, independently for each player. Drum mode does not drive JVS direction bits. High-speed drum input and reset after gameplay have [known issues](docs/issues.md); close and reopen content instead of using reset. Save states are not supported.
+In drum mode, Left = left Ka, Down = left Don, B = right Don, A = right Ka, independently for each player. Drum mode does not drive JVS direction bits. High-speed drum input and reset after gameplay have [known issues](docs/issues.md); close and reopen content instead of using reset.
 
 ## Building
 

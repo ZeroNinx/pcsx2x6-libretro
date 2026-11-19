@@ -82,6 +82,8 @@ namespace
 	};
 	LoadedOptions s_loaded_options;
 	unsigned s_applied_volume = LibretroOptions::DEFAULT_VOLUME;
+	// The manifest of the content prepared last.
+	std::string s_content_path;
 	bool s_reload_notice_shown = false;
 } // namespace
 
@@ -518,12 +520,18 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 
 	// SRAM is a core extension of the save layout: one image per gameid, seeded from the
 	// manifest's image on first use. x6 resolves the gameid and creates the game folder.
+	s_content_path = native_content_path;
 	boot_params->filename = std::move(native_content_path);
 	// Unlimited disables the VM's own frame limiter: the frontend paces every frame.
 	boot_params->start_unlimited = true;
 	boot_params->arcade_save_directory = Path::Combine(save_directory, ARCADE_SAVE_DIRECTORY_NAME);
 	boot_params->arcade_dongle_directory = Path::Combine(system_directory, "memcards");
 	return true;
+}
+
+const std::string& LibretroHost::GetContentPath()
+{
+	return s_content_path;
 }
 
 u32 LibretroHost::GetUpscaleMultiplier()

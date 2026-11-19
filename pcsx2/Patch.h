@@ -196,6 +196,9 @@ namespace Patch
 	extern u32 GetActiveCheatsCount();
 	extern u32 GetAllActivePatchesCount();
 
+	/// Hash of the commands of every active patch; equal for the same patch set.
+	extern u64 GetActivePatchesFingerprint();
+
 	extern bool IsGloballyToggleablePatch(const PatchInfo& patch_info);
 	extern bool IsGlobalSettingPatch(const PatchInfo& patch_info); // WS/NI: default follows a global toggle
 

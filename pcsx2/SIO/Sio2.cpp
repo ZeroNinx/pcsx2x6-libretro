@@ -518,7 +518,7 @@ u8 Sio2::Read()
 	return ret;
 }
 
-bool Sio2::DoState(StateWrapper& sw)
+bool Sio2::DoStateMembers(StateWrapper& sw)
 {
 	if (!sw.DoMarker("Sio2"))
 		return false;
@@ -543,6 +543,32 @@ bool Sio2::DoState(StateWrapper& sw)
 	sw.Do(&dmaBlockSize);
 	sw.Do(&queueComplete);
 	sw.Do(&transferBytes);
+	return sw.IsGood();
+}
+
+bool Sio2::CheckState(StateWrapper& sw)
+{
+	// The FIFOs never hold more than one SIO2 packet in each direction.
+	constexpr size_t max_fifo = 0x400;
+	Sio2 scratch;
+	std::deque<u8> fifo_in, fifo_out;
+	u64 card_checksums[SIO::PORTS][SIO::SLOTS];
+	uint32_t last_frame_busy;
+	if (!scratch.DoStateMembers(sw))
+		return false;
+	sw.Do(&fifo_in);
+	sw.Do(&fifo_out);
+	sw.DoBytes(card_checksums, sizeof(card_checksums));
+	sw.Do(&last_frame_busy);
+	return sw.IsGood() && scratch.port < SIO::PORTS && scratch.queuePosition < scratch.CmdQueue.size() &&
+		   scratch.commandLength <= 0x3FF && scratch.dmaBlockSize <= 0xFFFF * 4 && fifo_in.size() <= max_fifo &&
+		   fifo_out.size() <= max_fifo;
+}
+
+bool Sio2::DoState(StateWrapper& sw)
+{
+	if (!DoStateMembers(sw))
+		return false;
 
 	sw.Do(&g_Sio2FifoIn);
 	sw.Do(&g_Sio2FifoOut);

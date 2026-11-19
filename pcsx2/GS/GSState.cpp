@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/GSState.h"
+#include "common/Error.h"
 #include "GS/GSDump.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
@@ -6924,8 +6925,53 @@ GIFRegTEX0 GSState::GetTex0Layer(u32 lod)
 
 GSState::GSTransferBuffer::GSTransferBuffer()
 {
-	constexpr size_t alloc_size = 1024 * 1024 * 4;
-	buff = reinterpret_cast<u8*>(_aligned_malloc(alloc_size, 32));
+	buff = reinterpret_cast<u8*>(_aligned_malloc(TRANSFER_BUFFER_SIZE, 32));
+}
+
+bool GSState::ValidateFreezeData(std::span<const u8> data, Error* error)
+{
+	u32 version = 0;
+	if (data.size() >= sizeof(version))
+		std::memcpy(&version, data.data(), sizeof(version));
+	if (version != STATE_VERSION || data.size() != static_cast<size_t>(GetSaveStateSize(version)))
+	{
+		Error::SetString(error, "The GS state has another format version or size.");
+		return false;
+	}
+
+	// GetSaveStateSize() order: the transfer state is x, y, w, h, blit, position, registers, rect,
+	// total, start, end and write, followed by local memory, the GIF paths and Q.
+	const size_t tail = GSLocalMemory::m_vmsize + (sizeof(GIFPath::tag) + sizeof(GIFPath::reg)) * 4 + sizeof(m_q);
+	const size_t end_offset = data.size() - tail - sizeof(GSTransferBuffer::write) - sizeof(GSTransferBuffer::end);
+	const size_t start_offset = end_offset - sizeof(GSTransferBuffer::start);
+	const size_t total_offset = start_offset - sizeof(GSTransferBuffer::total);
+	const size_t h_offset = total_offset - sizeof(GSTransferBuffer::rect) - sizeof(GSTransferBuffer::m_reg) -
+							sizeof(GSTransferBuffer::m_pos) - sizeof(GSTransferBuffer::m_blit) - sizeof(GSTransferBuffer::h);
+	const size_t w_offset = h_offset - sizeof(GSTransferBuffer::w);
+	const size_t x_offset = w_offset - sizeof(GSTransferBuffer::y) - sizeof(GSTransferBuffer::x);
+	const auto read = [&data](size_t offset) {
+		int value;
+		std::memcpy(&value, data.data() + offset, sizeof(value));
+		return value;
+	};
+	const int total = read(total_offset), start = read(start_offset), end = read(end_offset);
+	const int x = read(x_offset), w = read(w_offset), h = read(h_offset);
+
+	// A write transfer fills the buffer up to end and flushes it from start; a finished read
+	// leaves start at total. Both lie within the transfer buffer.
+	if (total < 0 || total > TRANSFER_BUFFER_SIZE || start < 0 || start > total || end < 0 || end > total)
+	{
+		Error::SetString(error, "The GS state holds transfer offsets outside the transfer buffer.");
+		return false;
+	}
+	// The transfer position and size are 12-bit GS coordinates; the position indexes the pixel
+	// row offset table.
+	if (x < 0 || x > 4095 || w < 0 || w > 4095 || h < 0 || h > 4095)
+	{
+		Error::SetString(error, "The GS state holds a transfer outside the GS coordinate range.");
+		return false;
+	}
+	return true;
 }
 
 GSState::GSTransferBuffer::~GSTransferBuffer()

@@ -43,6 +43,7 @@
 #endif
 
 #include "common/Console.h"
+#include "common/Error.h"
 #include "common/FileSystem.h"
 #include "common/Path.h"
 #include "common/SmallString.h"
@@ -949,6 +950,20 @@ bool GSSaveSnapshotToMemory(u32 window_width, u32 window_height, bool apply_aspe
 
 	return g_gs_renderer->SaveSnapshotToMemory(window_width, window_height, apply_aspect, crop_borders,
 		width, height, pixels);
+}
+
+void GSReadbackTextureCacheForState()
+{
+	if (!g_gs_renderer)
+		return;
+
+	g_gs_renderer->Flush(GSState::GSFlushReason::SAVESTATE);
+	g_gs_renderer->ReadbackTextureCache();
+}
+
+bool GSValidateFreezeData(std::span<const u8> data, Error* error)
+{
+	return GSState::ValidateFreezeData(data, error);
 }
 
 float GSGetDisplayAspectRatio()

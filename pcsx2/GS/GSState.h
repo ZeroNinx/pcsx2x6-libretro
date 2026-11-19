@@ -24,6 +24,12 @@ public:
 
 	static constexpr int GetSaveStateSize(int version);
 
+	/// Checks a saved block of the current version before it is loaded: the transfer offsets
+	/// that index the transfer buffer must lie within it.
+	static bool ValidateFreezeData(std::span<const u8> data, Error* error);
+
+	static constexpr int TRANSFER_BUFFER_SIZE = 1024 * 1024 * 4;
+
 private:
 	// RESTRICT prevents multiple loads of the same part of the register when accessing its bitfields (the compiler is happy to know that memory writes in-between will not go there)
 

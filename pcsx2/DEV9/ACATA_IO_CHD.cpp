@@ -78,6 +78,16 @@ bool ChdImage::IsOpen() const
     return m_chd != nullptr;
 }
 
+bool ChdImage::GetSha1(u8 (&sha1)[20]) const
+{
+    const chd_header* header = m_chd ? chd_get_header(m_chd) : nullptr;
+    if (!header)
+        return false;
+
+    std::memcpy(sha1, header->sha1, sizeof(sha1));
+    return true;
+}
+
 ACMEDIATYPE ChdImage::GetType() const
 {
     return m_type;

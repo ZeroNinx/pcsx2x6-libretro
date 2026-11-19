@@ -43,6 +43,12 @@ public:
 	size_t transferBytes = 0;
 
 	Sio2();
+
+private:
+	// The registers and transfer progress, the part of the state held in members.
+	bool DoStateMembers(StateWrapper& sw);
+
+public:
 	~Sio2();
 
 	bool Initialize();
@@ -50,6 +56,10 @@ public:
 
 	void SoftReset();
 	bool DoState(StateWrapper& sw);
+
+	/// Reads a saved block as DoState() does, without changing anything or ejecting cards, and
+	/// checks the port, command queue position and lengths it holds.
+	static bool CheckState(StateWrapper& sw);
 
 	void Interrupt();
 

@@ -1108,6 +1108,42 @@ bool SaveStateBase::cdrFreeze()
 	if (!FreezeTag("cdrom"))
 		return false;
 
+	// Parameter and result counts index their 8-byte buffers.
+	NoteRange(cdr, cdr.ParamC, 0, 8);
+	NoteRange(cdr, cdr.ParamP, 0, 8);
+	NoteRange(cdr, cdr.ResultC, 0, 8);
+	NoteRange(FieldOf(cdr, cdr.ResultP), -8, 0, FieldOf(cdr, cdr.ResultC, -1));
+
+	if (!m_in_memory_state)
+	{
+		Freeze(cdr);
+		return IsOkay();
+	}
+
+	// An in-memory state holds the transfer pointer as its offset within the transfer buffer,
+	// one past the end for none.
+	constexpr uptr no_transfer = sizeof(cdr.Transfer) + 1;
+	u8* const transfer = cdr.pTransfer;
+	if (IsSaving())
+	{
+		const bool within = transfer >= cdr.Transfer && transfer <= cdr.Transfer + sizeof(cdr.Transfer);
+		cdr.pTransfer = reinterpret_cast<u8*>(within ? static_cast<uptr>(transfer - cdr.Transfer) : no_transfer);
+		NoteRange(FieldOf(cdr, cdr.pTransfer), 0, no_transfer);
+	}
 	Freeze(cdr);
+	if (IsSaving())
+	{
+		cdr.pTransfer = transfer;
+	}
+	else
+	{
+		const uptr offset = reinterpret_cast<uptr>(cdr.pTransfer);
+		cdr.pTransfer = (offset < no_transfer) ? cdr.Transfer + offset : nullptr;
+		if (offset > no_transfer)
+		{
+			Console.Error("cdrom: the state holds a transfer offset of %zu", static_cast<size_t>(offset));
+			m_error = true;
+		}
+	}
 	return IsOkay();
 }

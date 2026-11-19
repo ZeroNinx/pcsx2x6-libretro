@@ -1191,6 +1191,33 @@ u32 Patch::GetActiveCheatsCount()
 	return s_cheats_counts;
 }
 
+u64 Patch::GetActivePatchesFingerprint()
+{
+	// FNV-1a over the command fields; data_ptr is a host address and is left out.
+	u64 hash = 1469598103934665603ull;
+	const auto mix = [&hash](const void* data, size_t size) {
+		for (size_t i = 0; i < size; i++)
+		{
+			hash ^= static_cast<const u8*>(data)[i];
+			hash *= 1099511628211ull;
+		}
+	};
+	for (const PatchCommand* command : s_active_patches)
+	{
+		if (!command)
+		{
+			mix("-", 1);
+			continue;
+		}
+		mix(&command->placetopatch, sizeof(command->placetopatch));
+		mix(&command->cpu, sizeof(command->cpu));
+		mix(&command->type, sizeof(command->type));
+		mix(&command->addr, sizeof(command->addr));
+		mix(&command->data, sizeof(command->data));
+	}
+	return hash;
+}
+
 u32 Patch::GetAllActivePatchesCount()
 {
 	return s_gamedb_counts + s_patches_counts + s_cheats_counts;

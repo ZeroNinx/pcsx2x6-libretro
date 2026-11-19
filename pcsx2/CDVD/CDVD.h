@@ -168,6 +168,8 @@ extern void cdvdReadLanguageParams(u8* config);
 
 extern void cdvdLoadNVRAM();
 extern void cdvdSaveNVRAM();
+/// Hash of the BIOS NVRAM and mechacon version the VM holds, as written back to disk.
+extern u64 cdvdGetPersistentDataFingerprint();
 extern void cdvdReset();
 extern void cdvdVsync();
 extern void cdvdActionInterrupt();

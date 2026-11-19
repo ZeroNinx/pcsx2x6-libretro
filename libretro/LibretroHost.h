@@ -34,6 +34,9 @@ namespace LibretroHost
 	/// needs. On success, returns the parameters that boot the manifest.
 	bool PrepareContent(const char* content_path, VMBootParameters* boot_params, Error* error);
 
+	/// The manifest of the content prepared last.
+	const std::string& GetContentPath();
+
 	/// The internal resolution multiplier the content prepared last was loaded with.
 	u32 GetUpscaleMultiplier();
 

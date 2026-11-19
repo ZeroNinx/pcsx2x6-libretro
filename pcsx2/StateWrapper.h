@@ -32,6 +32,8 @@ public:
 		virtual u32 GetPosition() = 0;
 		virtual bool SeekAbsolute(u32 pos) = 0;
 		virtual bool SeekRelative(s32 count) = 0;
+		/// Bytes a read can still return.
+		virtual u32 GetRemaining() = 0;
 	};
 
 	class ReadOnlyMemoryStream : public IStream
@@ -44,6 +46,7 @@ public:
 		u32 GetPosition() override;
 		bool SeekAbsolute(u32 pos) override;
 		bool SeekRelative(s32 count) override;
+		u32 GetRemaining() override;
 
 	private:
 		const u8* m_buf;
@@ -61,6 +64,7 @@ public:
 		u32 GetPosition() override;
 		bool SeekAbsolute(u32 pos) override;
 		bool SeekRelative(s32 count) override;
+		u32 GetRemaining() override;
 
 	private:
 		u8* m_buf;
@@ -81,6 +85,7 @@ public:
 		u32 GetPosition() override;
 		bool SeekAbsolute(u32 pos) override;
 		bool SeekRelative(s32 count) override;
+		u32 GetRemaining() override;
 
 	private:
 		void Expand(u32 new_size);
@@ -176,6 +181,18 @@ public:
 
 	void DoBytes(void* data, size_t length);
 
+	/// Reading: whether `count` elements of at least `element_size` bytes can follow. A count
+	/// beyond the stream is corrupt; it sets the error instead of being allocated.
+	bool CanRead(u64 count, size_t element_size)
+	{
+		if (m_error || count * element_size > m_stream->GetRemaining())
+		{
+			m_error = true;
+			return false;
+		}
+		return true;
+	}
+
 	void Do(bool* value_ptr);
 	void Do(std::string* value_ptr);
 	void Do(String* value_ptr);
@@ -204,7 +221,11 @@ public:
 		u32 length = static_cast<u32>(data->size());
 		Do(&length);
 		if (m_mode == Mode::Read)
+		{
+			if (!CanRead(length, sizeof(T)))
+				return;
 			data->resize(length);
+		}
 		DoArray(data->data(), data->size());
 	}
 
@@ -215,6 +236,8 @@ public:
 		Do(&length);
 		if (m_mode == Mode::Read)
 		{
+			if (!CanRead(length, sizeof(T)))
+				return;
 			data->clear();
 			for (u32 i = 0; i < length; i++)
 			{

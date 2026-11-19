@@ -30,6 +30,50 @@ void vif1Reset()
 	resetNewVif(1);
 }
 
+// Fields of a VIF unit's state that its partly received unpack is checked against.
+struct VifUnpackFields
+{
+	SaveStateFieldConstraint::Operand command;
+	SaveStateFieldConstraint::Operand remaining_bytes;
+};
+
+// Saving: the conditions on a VIF unit's state that its commands rely on; `vu_memory` is the size
+// of the unit's VU program memory.
+static VifUnpackFields NoteVifConstraints(SaveStateBase& state, const vifStruct& vif, u32 vu_memory)
+{
+	const SaveStateFieldConstraint::Operand command = state.FieldOf(vif, vif.cmd);
+	state.NoteRange(vif, vif.cl, 0, 255);
+	state.NoteRange(vif, vif.irqoffset.value, 0, 3);
+	// MPG copies tag.size words of a program into VU memory at tag.addr.
+	SaveStateBase::When(state.NoteRange(vif, vif.tag.addr, 0, vu_memory), command, 0x7F, 0x4A);
+	SaveStateBase::When(state.NoteRange(vif, vif.tag.size, 0, 512), command, 0x7F, 0x4A);
+	// STROW and STCOL fill the remaining words of a four-word register.
+	SaveStateBase::When(state.NoteRange(vif, vif.tag.addr, 0, 3), command, 0x7E, 0x30);
+	SaveStateBase::When(state.NoteRange(state.FieldOf(vif, vif.tag.addr), 4, 4, state.FieldOf(vif, vif.tag.size)), command, 0x7E, 0x30);
+	// DIRECT and DIRECTHL transfer at most 65536 quadwords.
+	SaveStateBase::When(state.NoteRange(vif, vif.tag.size, 0, 65536 * 4), command, 0x7E, 0x50);
+	return {command, state.FieldOf(vif, vif.tag.size, 4)};
+}
+
+// The bytes of a partly received unpack, followed by the rest of the unpack, fill at most the
+// unit's buffer.
+static bool FreezeVifBuffer(SaveStateBase& state, nVifStruct& v, const VifUnpackFields& unpack, bool loading)
+{
+	state.NoteVariableField(SaveStateVariableField::VifBuffer, v.bSize);
+	// While an unpack (commands 0x60 to 0x7F) is pending, its remaining words follow these bytes.
+	SaveStateBase::When(state.NoteRange(state.FieldOf(v.bSize, v.bSize), 0, sizeof(v.buffer), unpack.remaining_bytes), unpack.command, 0x60, 0x60);
+	state.NoteRange(v.bSize, 0, sizeof(v.buffer));
+	state.Freeze(v.bSize);
+	if (loading && v.bSize > sizeof(v.buffer))
+	{
+		Console.Error("VIF: the state holds %u bytes of a partial unpack for a %zu-byte buffer", v.bSize, sizeof(v.buffer));
+		v.bSize = 0;
+		return false;
+	}
+	state.FreezeMem(v.buffer, v.bSize);
+	return true;
+}
+
 bool SaveStateBase::vif0Freeze()
 {
 	if (!FreezeTag("VIF0dma"))
@@ -37,10 +81,11 @@ bool SaveStateBase::vif0Freeze()
 
 	Freeze(g_vif0Cycles);
 
+	const VifUnpackFields unpack = NoteVifConstraints(*this, vif0, 0x1000);
 	Freeze(vif0);
 
-	Freeze(nVif[0].bSize);
-	FreezeMem(nVif[0].buffer, nVif[0].bSize);
+	if (!FreezeVifBuffer(*this, nVif[0], unpack, IsLoading()))
+		m_error = true;
 
 	return IsOkay();
 }
@@ -52,10 +97,11 @@ bool SaveStateBase::vif1Freeze()
 
 	Freeze(g_vif1Cycles);
 
+	const VifUnpackFields unpack = NoteVifConstraints(*this, vif1, 0x4000);
 	Freeze(vif1);
 
-	Freeze(nVif[1].bSize);
-	FreezeMem(nVif[1].buffer, nVif[1].bSize);
+	if (!FreezeVifBuffer(*this, nVif[1], unpack, IsLoading()))
+		m_error = true;
 
 	return IsOkay();
 }

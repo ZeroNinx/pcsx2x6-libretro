@@ -185,6 +185,21 @@ namespace ACJV {
     void SetGunForceOffscreen(bool held);                   // force the camera-lost report (the pedal bind = manual reload on Vampire Night)
     void SetGunOffscreenContour(float fraction);            // width of the aim-beside-the-screen band at the window edge (0..0.05)
     void SetGameId(const std::string& gameid);
+
+    // Guest-side bus state of a save state. Coins are saved by their own entry; host input
+    // levels are not state.
+    struct SavedState
+    {
+        u8 enabled;
+        u8 frame_sequence;
+        u16 dip_switch_state;
+        u16 last_coin_packet;
+        u16 fca_counter;
+        u8 rdbuf[ACJV_PACKETSIZE];
+        u8 wrbuf[ACJV_PACKETSIZE];
+    };
+    void SaveState(SavedState* state);
+    void LoadState(const SavedState& state);
     const std::string& GetGameId();
     const GunMapping& GetGunMapping();
 

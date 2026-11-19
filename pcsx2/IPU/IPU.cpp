@@ -125,13 +125,55 @@ bool SaveStateBase::ipuFreeze()
 	if (!FreezeTag("IPU"))
 		return false;
 
+	// FIFO positions index 32 words a quadword at a time.
+	for (const int* position : {&ipu_fifo.in.readpos, &ipu_fifo.in.writepos, &ipu_fifo.out.readpos, &ipu_fifo.out.writepos})
+	{
+		if (SaveStateFieldConstraint* c = NoteRange(ipu_fifo, *position, 0, 28))
+			c->alignment = 4;
+	}
 	Freeze(ipu_fifo);
 
+	NoteRange(g_BP, g_BP.BP, 0, 127);
+	NoteRange(g_BP, g_BP.IFC, 0, 8);
+	NoteRange(g_BP, g_BP.FP, 0, 2);
 	Freeze(g_BP);
 	Freeze(g_ipu_vqclut);
 	Freeze(g_ipu_thresh);
 	Freeze(coded_block_pattern);
+
+	// The decoder output lies within its macroblock buffers (168 quadwords); the DC precision
+	// is a 2-bit shift, and coefficients index the IDCT clip table.
+	NoteRange(FieldOf(decoder, decoder.ipu0_idx), 0, 168, FieldOf(decoder, decoder.ipu0_data));
+	NoteRange(decoder, decoder.intra_dc_precision, 0, 3);
+	for (const s16& coefficient : decoder.DCTblock)
+		NoteRange(decoder, coefficient, -2048, 2047);
+	const SaveStateFieldConstraint::Operand macroblock_modes = FieldOf(decoder, decoder.macroblock_modes);
 	Freeze(decoder);
+
+	// The command's resume positions select switch cases and table entries. A coefficient decode
+	// suspended in its second half (pos[5] = 1) resumes with a table pointer a state does not
+	// hold, so such a state is never written and never accepted.
+	const SaveStateFieldConstraint::Operand command = FieldOf(ipu_cmd, ipu_cmd.current);
+	NoteLocation(SaveStateFieldConstraint::Location::IpuCommand, command);
+	const auto position = [this, command](int index, u32 ipu_command, s64 max) {
+		When(NoteRange(ipu_cmd, ipu_cmd.pos[index], 0, max), command, 0xF0000000u, ipu_command << 28);
+	};
+	position(0, SCE_IPU_IDEC, 4);
+	position(1, SCE_IPU_IDEC, 4);
+	position(2, SCE_IPU_IDEC, 6);
+	position(0, SCE_IPU_BDEC, 5);
+	position(1, SCE_IPU_BDEC, 6);
+	position(0, SCE_IPU_VDEC, 1);
+	position(0, SCE_IPU_SETIQ, 8);
+	position(0, SCE_IPU_SETVQ, 4);
+	position(0, SCE_IPU_CSC, 48);
+	position(1, SCE_IPU_CSC, 64);
+	position(0, SCE_IPU_PACK, 128);
+	position(1, SCE_IPU_PACK, 32);
+	NoteRange(ipu_cmd, ipu_cmd.pos[3], 0, 1);
+	NoteRange(ipu_cmd, ipu_cmd.pos[4], 0, 63);
+	When(NoteRange(ipu_cmd, ipu_cmd.pos[4], 0, 62), macroblock_modes, MACROBLOCK_INTRA, MACROBLOCK_INTRA);
+	NoteRange(ipu_cmd, ipu_cmd.pos[5], 0, 0);
 	Freeze(ipu_cmd);
 	Freeze(IPUCoreStatus);
 

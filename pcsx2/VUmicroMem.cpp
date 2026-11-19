@@ -69,6 +69,7 @@ bool SaveStateBase::vuMicroFreeze()
 	Freeze(VU0.cycle);
 	Freeze(VU0.flags);
 	Freeze(VU0.code);
+	NoteRange(VU0.start_pc, 0, 0x1000 - 1);
 	Freeze(VU0.start_pc);
 	Freeze(VU0.branch);
 	Freeze(VU0.branchpc);
@@ -88,14 +89,20 @@ bool SaveStateBase::vuMicroFreeze()
 	Freeze(VU0.VIOldValue);
 	Freeze(VU0.VIRegNumber);
 	Freeze(VU0.fmac);
+	NoteRange(VU0.fmacreadpos, 0, 3);
 	Freeze(VU0.fmacreadpos);
+	NoteRange(VU0.fmacwritepos, 0, 3);
 	Freeze(VU0.fmacwritepos);
+	NoteRange(VU0.fmaccount, 0, 4);
 	Freeze(VU0.fmaccount);
 	Freeze(VU0.fdiv);
 	Freeze(VU0.efu);
 	Freeze(VU0.ialu);
+	NoteRange(VU0.ialureadpos, 0, 3);
 	Freeze(VU0.ialureadpos);
+	NoteRange(VU0.ialuwritepos, 0, 3);
 	Freeze(VU0.ialuwritepos);
+	NoteRange(VU0.ialucount, 0, 4);
 	Freeze(VU0.ialucount);
 
 	// VU1 state information
@@ -108,6 +115,7 @@ bool SaveStateBase::vuMicroFreeze()
 	Freeze(VU1.cycle);
 	Freeze(VU1.flags);
 	Freeze(VU1.code);
+	NoteRange(VU1.start_pc, 0, 0x4000 - 1);
 	Freeze(VU1.start_pc);
 	Freeze(VU1.branch);
 	Freeze(VU1.branchpc);
@@ -123,8 +131,14 @@ bool SaveStateBase::vuMicroFreeze()
 	Freeze(VU1.statusflag);
 	Freeze(VU1.clipflag);
 	Freeze(VU1.nextBlockCycles);
+	// XGKICK reads VU1 memory from xgkickaddr for up to xgkickdiff bytes without wrapping.
+	const SaveStateFieldConstraint::Operand xgkick_address = FieldOf(VU1.xgkickaddr, VU1.xgkickaddr);
+	if (SaveStateFieldConstraint* c = NoteRange(xgkick_address, 0, 0x3FFF))
+		c->alignment = 16;
 	Freeze(VU1.xgkickaddr);
+	NoteRange(FieldOf(VU1.xgkickdiff, VU1.xgkickdiff), 0, 0x4000, xgkick_address);
 	Freeze(VU1.xgkickdiff);
+	NoteRange(VU1.xgkicksizeremaining, 0, 0xFFFF);
 	Freeze(VU1.xgkicksizeremaining);
 	Freeze(VU1.xgkicklastcycle);
 	Freeze(VU1.xgkickcyclecount);
@@ -134,14 +148,20 @@ bool SaveStateBase::vuMicroFreeze()
 	Freeze(VU1.VIOldValue);
 	Freeze(VU1.VIRegNumber);
 	Freeze(VU1.fmac);
+	NoteRange(VU1.fmacreadpos, 0, 3);
 	Freeze(VU1.fmacreadpos);
+	NoteRange(VU1.fmacwritepos, 0, 3);
 	Freeze(VU1.fmacwritepos);
+	NoteRange(VU1.fmaccount, 0, 4);
 	Freeze(VU1.fmaccount);
 	Freeze(VU1.fdiv);
 	Freeze(VU1.efu);
 	Freeze(VU1.ialu);
+	NoteRange(VU1.ialureadpos, 0, 3);
 	Freeze(VU1.ialureadpos);
+	NoteRange(VU1.ialuwritepos, 0, 3);
 	Freeze(VU1.ialuwritepos);
+	NoteRange(VU1.ialucount, 0, 4);
 	Freeze(VU1.ialucount);
 
 	return IsOkay();

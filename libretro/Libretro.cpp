@@ -6,6 +6,8 @@
 #include "LibretroHost.h"
 #include "LibretroInput.h"
 #include "LibretroSession.h"
+#include "LibretroState.h"
+#include "LibretroVersion.h"
 #include "LibretroVulkan.h"
 #include "libretro.h"
 
@@ -13,8 +15,6 @@
 
 #include "common/Console.h"
 #include "common/Error.h"
-
-#include "svnrev.h"
 
 #include <array>
 #include <cstring>
@@ -25,7 +25,6 @@
 namespace
 {
 	constexpr const char* CORE_NAME = "PCSX2x6";
-	constexpr const char* CORE_VERSION = PCSX2X6_LIBRETRO_VERSION " (" GIT_REV "; PCSX2x6 " PCSX2X6_BASE_REVISION ")";
 	constexpr const char* CONTENT_EXTENSIONS = "acgame";
 
 	// Reported until a session delivers its own geometry and timing.
@@ -120,7 +119,7 @@ void retro_get_system_info(retro_system_info* info)
 {
 	std::memset(info, 0, sizeof(*info));
 	info->library_name = CORE_NAME;
-	info->library_version = CORE_VERSION;
+	info->library_version = LIBRETRO_CORE_VERSION;
 	info->valid_extensions = CONTENT_EXTENSIONS;
 	info->need_fullpath = true;
 	info->block_extract = true;
@@ -153,7 +152,7 @@ void retro_init(void)
 	LibretroAudio::Install();
 	s_initialized = true;
 	LibretroHost::InitializeLogging();
-	Console.WriteLnFmt("Core initialized: {}", CORE_VERSION);
+	Console.WriteLnFmt("Core initialized: {}", LIBRETRO_CORE_VERSION);
 	LibretroHost::DrainLogMessages();
 }
 
@@ -225,6 +224,7 @@ bool retro_load_game(const retro_game_info* game)
 {
 	ResetOutputState();
 	LibretroAudio::ResetQueue();
+	LibretroState::ResetSession();
 
 	Error error;
 	VMBootParameters boot_params;
@@ -254,6 +254,15 @@ bool retro_load_game(const retro_game_info* game)
 	s_context_lost = false;
 	s_session_failed = false;
 
+	// States exist only once the VM runs, and their length follows its memory contents. The
+	// frontend's answer is logged: RetroArch 1.22.2 does not acknowledge variable sizes, though
+	// its ordinary save, undo and automatic paths query the size right before each save.
+	u64 quirks = RETRO_SERIALIZATION_QUIRK_MUST_INITIALIZE | RETRO_SERIALIZATION_QUIRK_CORE_VARIABLE_SIZE;
+	if (!s_environment(RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS, &quirks))
+		Console.Warning("The frontend does not take serialization quirks");
+	else if (!(quirks & RETRO_SERIALIZATION_QUIRK_FRONT_VARIABLE_SIZE))
+		Console.WriteLn("The frontend does not acknowledge variable state sizes");
+
 	// The frontend reads the AV information and creates its video driver after this returns, so
 	// the maximum size it allocates for already covers the selected internal resolution.
 	const LibretroSession::FrameSize max_frame = LibretroSession::GetMaxFrameSize(upscale_multiplier);
@@ -280,6 +289,7 @@ void retro_unload_game(void)
 	s_frame_audio.data.clear();
 	LibretroAudio::ResetQueue();
 	ResetOutputState();
+	LibretroState::ResetSession();
 	LibretroHost::DrainLogMessages();
 }
 
@@ -486,16 +496,42 @@ void retro_run(void)
 
 size_t retro_serialize_size(void)
 {
-	return 0;
+	const size_t size = LibretroState::GetSize();
+	LibretroHost::DrainLogMessages();
+	return size;
 }
 
 bool retro_serialize(void* data, size_t size)
 {
-	return false;
+	const bool saved = LibretroState::Save(s_environment, data, size);
+	LibretroHost::DrainLogMessages();
+	return saved;
 }
 
 bool retro_unserialize(const void* data, size_t size)
 {
+	std::string failure;
+	switch (LibretroState::Load(s_environment, data, size, &failure))
+	{
+		case LibretroState::LoadResult::Loaded:
+			// Nothing of the replaced state is presented or played; until the restored VM
+			// completes an image, the frontend sees a black frame.
+			s_presented_frame = {};
+			LibretroVulkan::ClearOutput();
+			s_frame_audio.data.clear();
+			LibretroAudio::DiscardQueued();
+			LibretroHost::DrainLogMessages();
+			return true;
+
+		case LibretroState::LoadResult::Rejected:
+			LibretroHost::DrainLogMessages();
+			return false;
+
+		case LibretroState::LoadResult::Failed:
+			// The VM holds a partly restored state and cannot continue.
+			ContextFailed(failure.c_str());
+			return false;
+	}
 	return false;
 }
 

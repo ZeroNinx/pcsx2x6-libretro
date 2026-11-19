@@ -552,3 +552,110 @@ __forceinline void spu2Output(StereoOut32 out)
 			GSCapture::DeliverAudioPacket(s_current_chunk.data());
 	}
 }
+
+namespace
+{
+	constexpr u32 VOICES_PER_CORE = 24;
+
+	// The output continuation of an in-memory save state.
+	struct OutputState
+	{
+		u32 version;
+		u32 psx_mode;
+		// Float samples of the partly filled chunk; even and below the chunk size.
+		u32 chunk_position;
+		float chunk[AudioStream::CHUNK_SIZE * 2];
+		float dc_filter_in[2];
+		float dc_filter_out[2];
+		// The ADPCM block each voice is reading. Decoding a block depends on the samples before
+		// it, which the state does not hold, so a voice in the middle of a block keeps the block
+		// decoded; a voice between blocks decodes its next block when it reaches it.
+		u8 voice_in_block[2][VOICES_PER_CORE];
+		s16 voice_block[2][VOICES_PER_CORE][pcm_DecodedSamplesPerBlock];
+	};
+
+	constexpr u32 OUTPUT_STATE_VERSION = 2;
+} // namespace
+
+u32 SPU2::GetOutputStateSize()
+{
+	return sizeof(OutputState);
+}
+
+void SPU2::SaveOutputState(std::span<u8> out)
+{
+	// Unused chunk samples stay zero, so equal output produces equal states.
+	OutputState state = {};
+	state.version = OUTPUT_STATE_VERSION;
+	state.psx_mode = s_psxmode ? 1 : 0;
+	state.chunk_position = s_current_chunk_pos;
+	std::memcpy(state.chunk, s_current_chunk.data(), s_current_chunk_pos * sizeof(float));
+	std::memcpy(state.dc_filter_in, DCFilterIn, sizeof(DCFilterIn));
+	std::memcpy(state.dc_filter_out, DCFilterOut, sizeof(DCFilterOut));
+	for (u32 core = 0; core < 2; core++)
+	{
+		for (u32 voice = 0; voice < VOICES_PER_CORE; voice++)
+		{
+			const s16* block = Cores[core].Voices[voice].SBuffer;
+			state.voice_in_block[core][voice] = block ? 1 : 0;
+			if (block)
+				std::memcpy(state.voice_block[core][voice], block, sizeof(state.voice_block[core][voice]));
+		}
+	}
+	std::memcpy(out.data(), &state, sizeof(state));
+}
+
+bool SPU2::ValidateOutputState(std::span<const u8> data, Error* error)
+{
+	OutputState state;
+	if (data.size() != sizeof(state))
+	{
+		Error::SetString(error, "The audio output state has the wrong size.");
+		return false;
+	}
+	std::memcpy(&state, data.data(), sizeof(state));
+	if (state.version != OUTPUT_STATE_VERSION || state.psx_mode != (s_psxmode ? 1u : 0u) ||
+		(state.chunk_position % 2) != 0 || state.chunk_position >= s_current_chunk.size())
+	{
+		Error::SetString(error, "The audio output state does not match the running SPU2.");
+		return false;
+	}
+	for (const auto& core : state.voice_in_block)
+	{
+		for (const u8 in_block : core)
+		{
+			if (in_block > 1)
+			{
+				Error::SetString(error, "The audio output state holds an invalid voice block flag.");
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+void SPU2::LoadOutputState(std::span<const u8> data)
+{
+	OutputState state;
+	std::memcpy(&state, data.data(), sizeof(state));
+	s_current_chunk_pos = state.chunk_position;
+	std::memcpy(s_current_chunk.data(), state.chunk, state.chunk_position * sizeof(float));
+	std::memcpy(DCFilterIn, state.dc_filter_in, sizeof(DCFilterIn));
+	std::memcpy(DCFilterOut, state.dc_filter_out, sizeof(DCFilterOut));
+
+	// Loading the SPU2 block clears the decode cache and points every voice at its cleared
+	// entry. A voice in the middle of a block gets the block back; a voice between blocks
+	// decodes its next block. The envelope's cached phases are derived from its registers.
+	for (u32 core = 0; core < 2; core++)
+	{
+		for (u32 voice = 0; voice < VOICES_PER_CORE; voice++)
+		{
+			V_Voice& vc = Cores[core].Voices[voice];
+			vc.ADSR.UpdateCache();
+			if (state.voice_in_block[core][voice])
+				std::memcpy(vc.SBuffer, state.voice_block[core][voice], sizeof(state.voice_block[core][voice]));
+			else
+				vc.SBuffer = nullptr;
+		}
+	}
+}

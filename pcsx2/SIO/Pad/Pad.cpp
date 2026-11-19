@@ -498,32 +498,51 @@ std::string Pad::GetConfigSection(u32 pad_index)
 	return fmt::format("Pad{}", pad_index + 1);
 }
 
-// Create a new pad instance, update the smart pointer for this pad slot, and return a dumb pointer to the new pad.
-PadBase* Pad::CreatePad(u8 unifiedSlot, ControllerType controllerType, size_t ejectTicks)
+// A pad instance of the given type, not connected to any slot.
+static std::unique_ptr<PadBase> MakePad(u8 unifiedSlot, Pad::ControllerType controllerType, size_t ejectTicks)
 {
 	switch (controllerType)
 	{
-		case ControllerType::DualShock2:
-			s_controllers[unifiedSlot] = std::make_unique<PadDualshock2>(unifiedSlot, ejectTicks);
-			break;
-		case ControllerType::Guitar:
-			s_controllers[unifiedSlot] = std::make_unique<PadGuitar>(unifiedSlot, ejectTicks);
-			break;
-		case ControllerType::Jogcon:
-			s_controllers[unifiedSlot] = std::make_unique<PadJogcon>(unifiedSlot, ejectTicks);
-			break;
-		case ControllerType::Negcon:
-			s_controllers[unifiedSlot] = std::make_unique<PadNegcon>(unifiedSlot, ejectTicks);
-			break;
-		case ControllerType::Popn:
-			s_controllers[unifiedSlot] = std::make_unique<PadPopn>(unifiedSlot, ejectTicks);
-			break;
+		case Pad::ControllerType::DualShock2:
+			return std::make_unique<PadDualshock2>(unifiedSlot, ejectTicks);
+		case Pad::ControllerType::Guitar:
+			return std::make_unique<PadGuitar>(unifiedSlot, ejectTicks);
+		case Pad::ControllerType::Jogcon:
+			return std::make_unique<PadJogcon>(unifiedSlot, ejectTicks);
+		case Pad::ControllerType::Negcon:
+			return std::make_unique<PadNegcon>(unifiedSlot, ejectTicks);
+		case Pad::ControllerType::Popn:
+			return std::make_unique<PadPopn>(unifiedSlot, ejectTicks);
 		default:
-			s_controllers[unifiedSlot] = std::make_unique<PadNotConnected>(unifiedSlot, ejectTicks);
-			break;
+			return std::make_unique<PadNotConnected>(unifiedSlot, ejectTicks);
+	}
+}
+
+// Create a new pad instance, update the smart pointer for this pad slot, and return a dumb pointer to the new pad.
+PadBase* Pad::CreatePad(u8 unifiedSlot, ControllerType controllerType, size_t ejectTicks)
+{
+	s_controllers[unifiedSlot] = MakePad(unifiedSlot, controllerType, ejectTicks);
+	return s_controllers[unifiedSlot].get();
+}
+
+bool Pad::CheckState(StateWrapper& sw)
+{
+	if (!sw.DoMarker("PAD"))
+		return false;
+
+	for (u32 unifiedSlot = 0; unifiedSlot < NUM_CONTROLLER_PORTS; unifiedSlot++)
+	{
+		ControllerType statePadType;
+		sw.Do(&statePadType);
+		if (sw.HasError() || static_cast<u32>(statePadType) >= static_cast<u32>(ControllerType::Count))
+			return false;
+
+		const std::unique_ptr<PadBase> scratch = MakePad(static_cast<u8>(unifiedSlot), statePadType, 0);
+		if (!scratch->Freeze(sw))
+			return false;
 	}
 
-	return s_controllers[unifiedSlot].get();
+	return !sw.HasError();
 }
 
 bool Pad::HasConnectedPad(u8 unifiedSlot)

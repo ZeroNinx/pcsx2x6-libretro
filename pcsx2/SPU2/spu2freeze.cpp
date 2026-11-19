@@ -5,7 +5,11 @@
 #include "SPU2/spu2.h" // hopefully temporary, until I resolve lClocks depdendency
 #include "IopMem.h"
 
+#include "common/Console.h"
+#include "common/Error.h"
+
 #include <cstring>
+#include <memory>
 
 namespace SPU2Savestate
 {
@@ -163,4 +167,109 @@ s32 SPU2Savestate::ThawIt(DataBlock& spud)
 s32 SPU2Savestate::SizeIt()
 {
 	return sizeof(DataBlock);
+}
+
+bool SPU2::ValidateFreezeData(std::span<const u8> data, Error* error)
+{
+	using SPU2Savestate::DataBlock;
+	if (data.size() != sizeof(DataBlock))
+	{
+		Error::SetStringFmt(error, "The SPU2 state holds {} bytes instead of {}.", data.size(), sizeof(DataBlock));
+		return false;
+	}
+
+	// The block lies unaligned in the state, so it is examined in a copy.
+	const std::unique_ptr<DataBlock> block = std::make_unique<DataBlock>();
+	std::memcpy(block.get(), data.data(), sizeof(DataBlock));
+	if (block->spu2id != SPU2Savestate::SAVE_ID || block->version != SPU2Savestate::SAVE_VERSION)
+	{
+		Error::SetString(error, "The SPU2 state has another format version.");
+		return false;
+	}
+
+	// Loading turns the DMA offsets into IOP memory addresses and the voices' next addresses
+	// into sample cache entries; each has to lie within its memory. The reverb position indexes
+	// its sample buffers before it wraps.
+	// IOP memory addressed by SPU2 DMA, and SPU2 sample memory in 16-bit words.
+	constexpr u64 iop_memory = 0x200000;
+	constexpr u32 sample_words = 0x100000;
+	for (u32 index = 0; index < std::size(block->Cores); index++)
+	{
+		const V_Core& core = block->Cores[index];
+		// The index selects the core's own registers and memory areas.
+		if (core.Index != index)
+		{
+			Error::SetString(error, "The SPU2 state holds a core with another index.");
+			return false;
+		}
+		if (core.RevbSampleBufPos >= std::size(core.RevbDownBuf[0]) / 2)
+		{
+			Error::SetString(error, "The SPU2 state holds a reverb position outside its buffer.");
+			return false;
+		}
+		if (core.ActiveTSA >= sample_words || core.EffectsStartA >= sample_words || core.EffectsEndA >= sample_words)
+		{
+			Error::SetString(error, "The SPU2 state holds a transfer or effects address outside sample memory.");
+			return false;
+		}
+
+		// A pending DMA copies ReadSize words, and AutoDMA its remaining input, at the DMA address.
+		// The offset is checked on its own and the length against the space left after it, so no
+		// sum can wrap; the "no pointer" marker allows any length.
+		const auto dma_fits = [](const u16* pointer, u64 words) {
+			const uptr offset = reinterpret_cast<uptr>(pointer);
+			if (offset == static_cast<uptr>(-1))
+				return true;
+			return offset < iop_memory && words <= (iop_memory - offset) / 2;
+		};
+		if (!dma_fits(core.DMAPtr, core.ReadSize) || !dma_fits(core.DMARPtr, core.ReadSize) ||
+			!dma_fits(core.DMAPtr, static_cast<u64>(core.InputDataProgress) + core.InputDataLeft))
+		{
+			Error::SetString(error, "The SPU2 state holds a DMA transfer outside IOP memory.");
+			return false;
+		}
+
+		for (const V_Voice& voice : core.Voices)
+		{
+			if (voice.NextA >= sample_words)
+			{
+				Error::SetString(error, "The SPU2 state holds a voice address outside sample memory.");
+				return false;
+			}
+			// A playing voice reads the sample at its position within an 8-word ADPCM block, past
+			// the block header at position 0, which the mixer never leaves it on.
+			if (voice.ADSR.Phase != V_ADSR::PHASE_STOPPED && (voice.NextA % pcm_WordsPerBlock) == 0)
+			{
+				Error::SetString(error, "The SPU2 state holds a playing voice on an ADPCM block header.");
+				return false;
+			}
+			// The envelope phase selects one of its cached phases.
+			if (voice.ADSR.Phase >= V_ADSR::ADSR_PHASES)
+			{
+				Error::SetString(error, "The SPU2 state holds an invalid envelope phase.");
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+void SPU2::NormalizeFreezeData(std::span<u8> data)
+{
+	using SPU2Savestate::DataBlock;
+	if (data.size() != sizeof(DataBlock))
+	{
+		Console.ErrorFmt("SPU2: a {}-byte state cannot be normalized", data.size());
+		return;
+	}
+
+	// The voices' sample buffer pointers are host addresses; loading rebuilds them from NextA.
+	const std::unique_ptr<DataBlock> block = std::make_unique<DataBlock>();
+	std::memcpy(block.get(), data.data(), sizeof(DataBlock));
+	for (V_Core& core : block->Cores)
+	{
+		for (V_Voice& voice : core.Voices)
+			voice.SBuffer = nullptr;
+	}
+	std::memcpy(data.data(), block.get(), sizeof(DataBlock));
 }

@@ -795,6 +795,9 @@ bool SaveStateBase::psxRcntFreeze()
 	if (!FreezeTag("iopCounters"))
 		return false;
 
+	// The rate divides cycle counts.
+	for (const psxCounter& counter : psxCounters)
+		NoteRange(psxCounters, counter.rate, 1, std::numeric_limits<u32>::max());
 	Freeze(psxCounters);
 	Freeze(psxNextDeltaCounter);
 	Freeze(psxNextStartCounter);

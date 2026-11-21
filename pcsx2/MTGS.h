@@ -50,6 +50,11 @@ namespace MTGS
 	/// Fully stops the thread, closing in the process if needed.
 	void ShutdownThread();
 
+	/// Releases the handle of a thread the system has already terminated, so that the static
+	/// thread object can be destroyed while the process terminates. Only for that phase: it does
+	/// not stop, wait for or synchronize with the thread, and takes no lock.
+	void ForgetTerminatedThread();
+
 	/// Re-presents the current frame. Call when things like window resizes happen to re-display
 	/// the current frame with the correct proportions. Should only be called from the CPU thread.
 	void PresentCurrentFrame();

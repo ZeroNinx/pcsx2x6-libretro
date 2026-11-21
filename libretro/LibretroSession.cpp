@@ -907,6 +907,13 @@ void LibretroSession::Shutdown()
 	s_exit_requested = false;
 }
 
+void LibretroSession::ForgetTerminatedThreads()
+{
+	if (s_cpu_thread.Joinable())
+		s_cpu_thread.Detach();
+	MTGS::ForgetTerminatedThread();
+}
+
 bool LibretroSession::IsActive()
 {
 	std::unique_lock lock(s_mutex);

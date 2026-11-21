@@ -30,6 +30,11 @@ namespace LibretroVulkan
 	/// through negotiation interface v2. Returns false when the frontend cannot provide one.
 	bool Register(retro_environment_t environment, const ContextCallbacks& callbacks);
 
+	/// Frontend thread, from retro_deinit once the GS is closed and the CPU thread has exited:
+	/// forgets the frontend's interface, the context the GS was created on and the registration.
+	/// The device and instance belong to the frontend and are not destroyed.
+	void Unregister();
+
 	/// Frontend thread: the frontend's Vulkan interface while its context is ready; null otherwise.
 	const retro_hw_render_interface_vulkan* GetInterface();
 

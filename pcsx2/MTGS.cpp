@@ -141,6 +141,14 @@ void MTGS::ShutdownThread()
 	s_thread.Join();
 }
 
+void MTGS::ForgetTerminatedThread()
+{
+	if (!s_thread.Joinable())
+		return;
+
+	s_thread.Detach();
+}
+
 void MTGS::ThreadEntryPoint()
 {
 	Threading::SetNameOfCurrentThread("GS");

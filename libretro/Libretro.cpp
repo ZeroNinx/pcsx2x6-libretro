@@ -16,6 +16,10 @@
 #include "common/Console.h"
 #include "common/Error.h"
 
+#ifdef _WIN32
+#include "common/RedtapeWindows.h"
+#endif
+
 #include <array>
 #include <cstring>
 #include <string>
@@ -146,6 +150,20 @@ void retro_get_system_av_info(retro_system_av_info* info)
 	*info = s_accepted_av;
 }
 
+#ifdef _WIN32
+// Called by the default CRT entry point before it destroys the core's static objects. When the
+// process terminates without the frontend having deinitialized the core, the system has already
+// ended every other thread; the static thread objects still holding their handles would report
+// threads that were neither joined nor detached. Only their handles are released here. Normal
+// unloads keep their checks: the frontend has to deinitialize the core, which joins the threads.
+BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID reserved)
+{
+	if (reason == DLL_PROCESS_DETACH && reserved != nullptr)
+		LibretroSession::ForgetTerminatedThreads();
+	return TRUE;
+}
+#endif
+
 void retro_init(void)
 {
 	ResetOutputState();
@@ -159,6 +177,9 @@ void retro_init(void)
 void retro_deinit(void)
 {
 	LibretroSession::Shutdown();
+	// Nothing runs on the frontend's device any more; a frontend that deinitializes without
+	// destroying its context releases that context afterwards.
+	LibretroVulkan::Unregister();
 	LibretroAudio::Uninstall();
 	LibretroAudio::ResetQueue();
 	// Assigning an empty vector keeps its capacity; exchanging releases the audio memory.

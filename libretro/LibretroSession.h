@@ -135,6 +135,11 @@ namespace LibretroSession
 	/// Stops the VM, closes the GS and ends the CPU thread.
 	void Shutdown();
 
+	/// While the process terminates, after the system has ended every other thread: releases
+	/// the handles of the CPU and GS threads so their static objects can be destroyed. Takes no
+	/// lock, waits for nothing, allocates nothing and logs nothing.
+	void ForgetTerminatedThreads();
+
 	/// Returns true if a VM session is active.
 	bool IsActive();
 

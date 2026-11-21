@@ -514,6 +514,20 @@ void LibretroVulkan::ReleaseOutputs()
 	s_output_failed.store(false, std::memory_order_release);
 }
 
+void LibretroVulkan::Unregister()
+{
+	// context_destroy releases the interface; a frontend that deinitializes the core without it
+	// frees the interface afterwards, so it must not be used by the next session.
+	if (GetInterface())
+		Console.Warning("The core was deinitialized while the frontend's Vulkan context was still in use");
+	SetInterface(nullptr);
+	GSDeviceVK::SetExternalContext(nullptr);
+	s_context = {};
+	s_callbacks = {};
+	s_environment = nullptr;
+	s_sync_index_mask = 0;
+}
+
 bool LibretroVulkan::OutputFailed()
 {
 	return s_output_failed.load(std::memory_order_acquire);

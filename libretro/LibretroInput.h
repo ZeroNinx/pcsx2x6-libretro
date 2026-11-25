@@ -14,11 +14,12 @@ namespace LibretroSession
 /// comes from x6's GameID-selected layout; levels and edges are applied on the CPU thread.
 namespace LibretroInput
 {
-	/// CPU thread: releases every mapped control at a session boundary. Coin and Test only
-	/// trigger again after their buttons have been seen released.
+	/// CPU thread: releases every mapped control at a session boundary. Coin, Test and drum
+	/// hits only trigger again after their buttons have been seen released.
 	void Reset();
 
-	/// CPU thread: applies the input of the frame that is about to run.
+	/// CPU thread: applies the input of the frame that is about to run. Each drum press emits
+	/// one guest frame of sensor input; holding the button does not repeat the hit.
 	void Apply(const LibretroSession::InputSnapshot& input);
 
 	/// Frontend thread: describes the controls of the game that was just loaded.

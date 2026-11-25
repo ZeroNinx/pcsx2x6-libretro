@@ -77,6 +77,7 @@ namespace
 
 	std::array<EdgeControl, LibretroSession::INPUT_PORTS> s_coin;
 	EdgeControl s_test;
+	std::array<EdgeControl, JVS_DRUM_CHANNEL_MAX> s_drum_edges;
 
 	// RetroPad button at the position x6 binds a layout button to on a PS2 pad.
 	bool GetRetroPadButton(GenericInputBinding binding, u32* button)
@@ -150,8 +151,8 @@ namespace
 	}
 
 	// Several RetroPad buttons may drive one JVS bit (a layout can wire actions onto the
-	// direction bits), so every bit is pressed while any of its buttons is held. Drum
-	// sensors read the level of their button.
+	// direction bits), so every bit is pressed while any of its buttons is held. Each drum
+	// press emits a pulse for this guest frame, rather than sustaining the sensor while held.
 	void ApplyLevels(u32 port, u16 buttons)
 	{
 		u16 mapped = 0;
@@ -175,7 +176,8 @@ namespace
 		ACJV::SetButtonState(port, pressed, true);
 
 		for (const DrumMapping& drum : s_drums[port])
-			ACJV::SetDrumHit(drum.channel, (buttons & (1u << drum.retropad_button)) != 0);
+			ACJV::SetDrumHit(drum.channel,
+				s_drum_edges[drum.channel].Pressed((buttons & (1u << drum.retropad_button)) != 0));
 	}
 } // namespace
 
@@ -192,7 +194,10 @@ void LibretroInput::Reset()
 		s_coin[port] = {};
 	}
 	for (u32 channel = 0; channel < JVS_DRUM_CHANNEL_MAX; channel++)
+	{
 		ACJV::SetDrumHit(channel, false);
+		s_drum_edges[channel] = {};
+	}
 	s_test = {};
 }
 
@@ -206,6 +211,8 @@ void LibretroInput::Apply(const LibretroSession::InputSnapshot& input)
 		if (!input.connected[port] || input.device_changed[port])
 		{
 			s_coin[port] = {};
+			for (const DrumMapping& drum : s_drums[port])
+				s_drum_edges[drum.channel] = {};
 			if (port == TEST_PORT)
 				s_test = {};
 		}

@@ -4,7 +4,7 @@ Open compatibility issues include emulator defects and frontend integration limi
 
 | ID | Issue | Status | Follow-up |
 | --- | --- | --- | --- |
-| ISSUE-001 | Missed drum hits in fast charts | Reported in both the core and standalone PCSX2x6; cause unresolved | Deferred behind performance work; input comparison with paraLLEl-PS2 |
+| ISSUE-001 | Missed drum hits in fast charts | Sustained-level overlap suppression fixed in the libretro input path | Same-frame arbitration and missed frontend samples remain outside the fix |
 | ISSUE-002 | Reset failure after arcade execution | Also reproducible in standalone PCSX2x6; upstream defect unresolved | Separate emulator reset investigation |
 | ISSUE-003 | Excess audio after resetting a running VM | Observed in the core; suspected SPU2 timing cause unverified | Investigate with ISSUE-002 |
 | ISSUE-004 | Video-driver recreation on another device or queue ends the content session | Fullscreen switching and other recreation preserving the device and graphics queue keep the session; a different device or queue still ends content | None planned; recovery onto another device is unsupported |
@@ -12,9 +12,9 @@ Open compatibility issues include emulator defects and frontend integration limi
 
 ## ISSUE-001: Missed drum hits in fast charts
 
-NM00054 can miss drum input during fast charts. Similar behavior has been reported in standalone PCSX2x6. Basic two-player Don/Ka mapping and ordinary press/release behavior work, but high-speed accuracy is not established. There is no confirmed cause or automated reproduction yet.
+NM00054 can miss drum input during fast charts. Similar behavior has been reported in standalone PCSX2x6. Sustained full-scale values from overlapping digital buttons can cause the game to suppress a later hit: equal-amplitude signals favor Don over Ka and left Ka over right Ka. The core now converts each digital drum press into a one-guest-frame pulse instead of sustaining the sensor while the button is held.
 
-Follow-up will compare frontend sampling, input latching, frame progression and JVS reads with standalone PCSX2x6 and paraLLEl-PS2. Establish a repeatable chart/device case before selecting a fix; a scheduling change is not assumed to solve it.
+The one-frame pulse addresses sustained-level overlap suppression; it does not establish full high-speed chart accuracy. It preserves the game's arbitration for genuinely simultaneous hits and cannot recover a short press missed by frontend sampling. Other missed-hit mechanisms require separate investigation.
 
 ## ISSUE-002: Reset failure after arcade execution
 

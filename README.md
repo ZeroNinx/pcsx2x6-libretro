@@ -52,7 +52,7 @@ BIOS files are loaded directly from `<system>/pcsx2x6/bios/`; their `.nvm`/`.mec
 
 Both ports use RetroPad. For fighting layouts, the four face buttons follow x6's PS2 positions: Square → Y, Cross → B, Circle → A, Triangle → X. Directions and Start retain their usual meanings. Select inserts a coin, L3 is Service, and port 1 R3 toggles Test Mode. In Test Mode, use the game's menu to exit and save.
 
-In drum mode, Left = left Ka, Down = left Don, B = right Don, A = right Ka, independently for each player. Drum mode does not drive JVS direction bits. High-speed drum input and reset after gameplay have [known issues](docs/issues.md); close and reopen content instead of using reset.
+In drum mode, Left = left Ka, Down = left Don, B = right Don, A = right Ka, independently for each player. Each press produces a one-guest-frame hit; holding a button does not repeat it. After starting content, loading a state, resetting or reconnecting a port, release held drum buttons before striking again. Drum mode does not drive JVS direction bits. High-speed drum input and reset after gameplay have [known issues](docs/issues.md); close and reopen content instead of using reset.
 
 ## Building
 

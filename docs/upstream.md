@@ -50,4 +50,6 @@ The core must report both this project's build revision and the PCSX2x6 base rev
 
 ## Additional upstream changes
 
-None. Future adopted changes will identify the source project, revision, and integration purpose.
+| Source | Change | Purpose |
+| --- | --- | --- |
+| [PCSX2 `24eea4392`](https://github.com/PCSX2/pcsx2/commit/24eea4392) | The D3D11 device initializes its null texture pointer and clears it after deletion | Early device-creation failure does not delete an uninitialized pointer during cleanup |

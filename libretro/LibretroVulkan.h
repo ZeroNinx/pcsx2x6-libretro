@@ -3,90 +3,50 @@
 
 #pragma once
 
-#include "libretro.h"
-
-#include "common/Pcsx2Types.h"
+#include "LibretroOutput.h"
 
 struct retro_hw_render_interface_vulkan;
 
 /// The Vulkan context the frontend shares with the GS. The frontend creates the instance and
 /// the device through the core's negotiation callbacks, so the GS renders on the device the
 /// frontend presents with; the GS opens while the device is created, and the VM boots once the
-/// frontend's context is ready.
+/// frontend's context is ready. The functions implement LibretroOutput for this backend.
 namespace LibretroVulkan
 {
-	/// Frontend thread, invoked from the context callbacks.
-	struct ContextCallbacks
-	{
-		/// Boots the VM on the ready context; returns whether it started, having reported any failure.
-		bool (*context_ready)();
-		/// Reports a context the VM cannot run on and ends the session.
-		void (*context_failed)(const char* reason);
-		/// Stops the VM and closes the GS while the device is still valid.
-		void (*context_lost)();
-	};
-
 	/// Frontend thread, during retro_load_game: asks the frontend for a Vulkan context created
 	/// through negotiation interface v2. Returns false when the frontend cannot provide one.
-	bool Register(retro_environment_t environment, const ContextCallbacks& callbacks);
+	bool Register(retro_environment_t environment, const LibretroOutput::ContextCallbacks& callbacks);
 
-	/// Frontend thread, from retro_deinit once the GS is closed and the CPU thread has exited:
-	/// forgets the frontend's interface, the context the GS was created on and the registration.
-	/// The device and instance belong to the frontend and are not destroyed.
+	/// See LibretroOutput::Unregister().
 	void Unregister();
 
 	/// Frontend thread: the frontend's Vulkan interface while its context is ready; null otherwise.
 	const retro_hw_render_interface_vulkan* GetInterface();
 
-	enum class InterfaceState
-	{
-		/// The frontend still uses the interface the GS has.
-		Current,
-		/// The frontend recreated its video driver around the same device and queue; the GS
-		/// now uses the new interface.
-		Replaced,
-		/// The frontend's interface cannot be used: it is missing, or uses another device or
-		/// queue. The GS no longer uses the frontend's queue lock; the session must end.
-		Invalid,
-	};
-
 	/// Frontend thread, between frames while the GS is idle: takes over the interface of a video
 	/// driver the frontend recreated. The frontend keeps its context in that case and calls no
 	/// context callback, so this is the only place the change shows.
-	InterfaceState RefreshInterface();
+	LibretroOutput::InterfaceState RefreshInterface();
 
 	/// Frontend thread, before each frame request: waits as the frontend requires for its current
 	/// sync index and returns it. The frame is drawn into the output slot of that index.
 	u32 AcquireOutputSlot();
 
-	/// Frontend thread: makes the next frames black until the GS draws a new image, so nothing
-	/// from before a reset is shown again.
+	/// See LibretroOutput::ClearOutput().
 	void ClearOutput();
 
-	enum class OutputResult
-	{
-		/// The slot holds the frame's image, or black while there is none to show.
-		Drawn,
-		/// The GS has no new image; the previous one stays valid.
-		Unchanged,
-		/// The slot could not be prepared; the reason was logged.
-		Failed,
-	};
+	/// See LibretroOutput::RenderOutput().
+	LibretroOutput::Result RenderOutput(u32 slot, LibretroOutput::Image* image);
 
-	/// GS thread: draws the current output image into `slot` at its own size and submits the work
-	/// without waiting for the GPU. Reports the size of the image drawn.
-	OutputResult RenderOutput(u32 slot, u32* width, u32* height);
+	/// See LibretroOutput::RenderBlackOutput().
+	LibretroOutput::Result RenderBlackOutput(u32 slot, LibretroOutput::Image* image);
 
-	/// GS thread: draws opaque black into `slot` regardless of the GS output, for a frontend frame
-	/// that has no image to show while the VM does not run.
-	OutputResult RenderBlackOutput(u32 slot, u32* width, u32* height);
-
-	/// GS thread: releases every output slot. Must run before the GS device is destroyed.
+	/// See LibretroOutput::ReleaseOutputs().
 	void ReleaseOutputs();
 
-	/// Frontend thread: hands the image of `slot` to the frontend for the next video refresh.
-	void SetOutputImage(u32 slot);
+	/// Frontend thread: hands the image of `image.slot` to the frontend for the next video refresh.
+	bool Present(const LibretroOutput::Image& image);
 
-	/// Frontend thread: whether an output image could not be prepared, which ends the session.
+	/// See LibretroOutput::OutputFailed().
 	bool OutputFailed();
 } // namespace LibretroVulkan

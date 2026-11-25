@@ -79,6 +79,7 @@ namespace
 		bool region_bypass = true;
 		LibretroOptions::MtvuSetting mtvu = LibretroOptions::MtvuSetting::Automatic;
 		unsigned upscale_multiplier = 1;
+		LibretroOptions::Renderer renderer = LibretroOptions::Renderer::Vulkan;
 	};
 	LoadedOptions s_loaded_options;
 	unsigned s_applied_volume = LibretroOptions::DEFAULT_VOLUME;
@@ -376,8 +377,10 @@ static void ApplyCoreSettings(const std::string& bios_name)
 		s_loaded_options.region_bypass ? Patch::PATCH_ENABLE_CONFIG_KEY : Patch::PATCH_DISABLE_CONFIG_KEY,
 		{REGION_BYPASS_PATCH_NAME});
 
-	// The core owns a device without a window, and the frontend paces the session.
-	s_settings.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(GSRendererType::VK));
+	// The GS renders without a window on the selected API, and the frontend paces the session.
+	const GSRendererType renderer =
+		s_loaded_options.renderer == LibretroOptions::Renderer::D3D11 ? GSRendererType::DX11 : GSRendererType::VK;
+	s_settings.SetIntValue("EmuCore/GS", "Renderer", static_cast<int>(renderer));
 	s_settings.SetBoolValue("EmuCore/GS", "VsyncEnable", false);
 	// The maximum frame size reported to the frontend follows the same multiplier.
 	s_settings.SetFloatValue("EmuCore/GS", "upscale_multiplier", static_cast<float>(s_loaded_options.upscale_multiplier));
@@ -475,7 +478,8 @@ bool LibretroHost::PrepareContent(const char* content_path, VMBootParameters* bo
 	}
 
 	s_loaded_options = {LibretroOptions::GetBios(s_environment), LibretroOptions::GetRegionBypass(s_environment),
-		LibretroOptions::GetMtvu(s_environment), LibretroOptions::GetUpscaleMultiplier(s_environment)};
+		LibretroOptions::GetMtvu(s_environment), LibretroOptions::GetUpscaleMultiplier(s_environment),
+		LibretroOptions::GetRenderer(s_environment)};
 	s_applied_volume = LibretroOptions::GetVolume(s_environment);
 	s_reload_notice_shown = false;
 
@@ -539,6 +543,12 @@ u32 LibretroHost::GetUpscaleMultiplier()
 	return s_loaded_options.upscale_multiplier;
 }
 
+LibretroOutput::Backend LibretroHost::GetBackend()
+{
+	return s_loaded_options.renderer == LibretroOptions::Renderer::D3D11 ? LibretroOutput::Backend::D3D11 :
+																		   LibretroOutput::Backend::Vulkan;
+}
+
 void LibretroHost::CheckOptionChanges()
 {
 	bool updated = false;
@@ -557,7 +567,8 @@ void LibretroHost::CheckOptionChanges()
 	const bool reload_changed = LibretroOptions::GetBios(s_environment) != s_loaded_options.bios ||
 		LibretroOptions::GetRegionBypass(s_environment) != s_loaded_options.region_bypass ||
 		LibretroOptions::GetMtvu(s_environment) != s_loaded_options.mtvu ||
-		LibretroOptions::GetUpscaleMultiplier(s_environment) != s_loaded_options.upscale_multiplier;
+		LibretroOptions::GetUpscaleMultiplier(s_environment) != s_loaded_options.upscale_multiplier ||
+		LibretroOptions::GetRenderer(s_environment) != s_loaded_options.renderer;
 	if (reload_changed && !std::exchange(s_reload_notice_shown, true))
 	{
 		Console.WriteLn("Changed core options take effect when the content is loaded again");

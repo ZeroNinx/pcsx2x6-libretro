@@ -51,8 +51,10 @@ namespace LibretroSession
 	{
 		/// Number of the frame request this frame completed, counted from 1 per session.
 		u64 sequence = 0;
-		/// The output slot holding the image; see LibretroVulkan::RenderOutput().
+		/// The output slot holding the image and the generation of its outputs; see
+		/// LibretroOutput::Image.
 		u32 slot = 0;
+		u32 generation = 0;
 		u32 width = 0;
 		u32 height = 0;
 		float aspect_ratio = 0.0f;

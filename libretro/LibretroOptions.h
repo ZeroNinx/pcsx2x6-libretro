@@ -18,7 +18,6 @@ namespace LibretroOptions
 	inline constexpr const char* VOLUME_KEY = "pcsx2x6_volume";
 	inline constexpr const char* MTVU_KEY = "pcsx2x6_mtvu";
 	inline constexpr const char* UPSCALE_KEY = "pcsx2x6_upscale";
-	/// Reserved: registered once a renderer besides Vulkan passes acceptance.
 	inline constexpr const char* RENDERER_KEY = "pcsx2x6_renderer";
 
 	/// Output volume in percent when the option is unavailable.
@@ -26,6 +25,13 @@ namespace LibretroOptions
 
 	/// Largest internal resolution multiplier offered; 1 is the native resolution.
 	inline constexpr unsigned MAX_UPSCALE_MULTIPLIER = 4;
+
+	/// The graphics API the GS uses.
+	enum class Renderer
+	{
+		Vulkan,
+		D3D11,
+	};
 
 	enum class MtvuSetting
 	{
@@ -45,6 +51,7 @@ namespace LibretroOptions
 	unsigned GetVolume(retro_environment_t environment);
 	MtvuSetting GetMtvu(retro_environment_t environment);
 	unsigned GetUpscaleMultiplier(retro_environment_t environment);
+	Renderer GetRenderer(retro_environment_t environment);
 
 	/// Text in the frontend's language for a reload-required change made while content runs.
 	const char* GetReloadNotice(retro_environment_t environment);

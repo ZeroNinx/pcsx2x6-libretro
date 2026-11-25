@@ -297,6 +297,11 @@ public:
 	GSDevice11();
 	~GSDevice11() override;
 
+	/// Makes the next GS device use the adapter with `luid`, failing when it is not present,
+	/// instead of the configured adapter; null restores the configured adapter. Only valid while
+	/// no GS device exists.
+	static void SetRequiredAdapter(const LUID* luid);
+
 	static void SetD3DDebugObjectName(ID3D11DeviceChild* obj, std::string_view name);
 
 	__fi static GSDevice11* GetInstance() { return static_cast<GSDevice11*>(g_gs_device.get()); }

@@ -22,7 +22,7 @@
 namespace
 {
 	retro_environment_t s_environment = nullptr;
-	LibretroVulkan::ContextCallbacks s_callbacks = {};
+	LibretroOutput::ContextCallbacks s_callbacks = {};
 
 	// The context the GS device runs on. It outlives every device created on it.
 	GSDeviceVK::ExternalContext s_context;
@@ -228,7 +228,7 @@ static void ContextDestroy()
 	GSDeviceVK::SetExternalContext(nullptr);
 }
 
-bool LibretroVulkan::Register(retro_environment_t environment, const ContextCallbacks& callbacks)
+bool LibretroVulkan::Register(retro_environment_t environment, const LibretroOutput::ContextCallbacks& callbacks)
 {
 	s_environment = environment;
 	s_callbacks = callbacks;
@@ -285,8 +285,10 @@ const retro_hw_render_interface_vulkan* LibretroVulkan::GetInterface()
 	return s_interface;
 }
 
-LibretroVulkan::InterfaceState LibretroVulkan::RefreshInterface()
+LibretroOutput::InterfaceState LibretroVulkan::RefreshInterface()
 {
+	using LibretroOutput::InterfaceState;
+
 	const retro_hw_render_interface_vulkan* iface = nullptr;
 	if (!s_environment(RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE, &iface) || !iface)
 	{
@@ -429,9 +431,9 @@ static bool PrepareOutputSlot(OutputSlot& slot, u32 width, u32 height)
 
 // GS thread: draws the current output image into a slot, or opaque black when `has_image` is
 // false, and submits the work without waiting for the GPU.
-static LibretroVulkan::OutputResult DrawOutput(u32 slot_index, bool has_image, u32 image_width, u32 image_height)
+static LibretroOutput::Result DrawOutput(u32 slot_index, bool has_image, u32 image_width, u32 image_height)
 {
-	using LibretroVulkan::OutputResult;
+	using OutputResult = LibretroOutput::Result;
 
 	OutputSlot& slot = s_output_slots[slot_index];
 	if (!PrepareOutputSlot(slot, image_width, image_height))
@@ -469,8 +471,10 @@ static LibretroVulkan::OutputResult DrawOutput(u32 slot_index, bool has_image, u
 	return OutputResult::Drawn;
 }
 
-LibretroVulkan::OutputResult LibretroVulkan::RenderOutput(u32 slot_index, u32* width, u32* height)
+LibretroOutput::Result LibretroVulkan::RenderOutput(u32 slot_index, LibretroOutput::Image* image)
 {
+	using OutputResult = LibretroOutput::Result;
+
 	if (s_rebuild_outputs.exchange(false, std::memory_order_acq_rel))
 		ReleaseOutputs();
 
@@ -488,18 +492,16 @@ LibretroVulkan::OutputResult LibretroVulkan::RenderOutput(u32 slot_index, u32* w
 	const OutputResult result = DrawOutput(slot_index, has_image, image_width, image_height);
 	if (result == OutputResult::Drawn && has_image)
 		s_black_until_image.store(false, std::memory_order_release);
-	*width = image_width;
-	*height = image_height;
+	*image = {slot_index, 0, image_width, image_height};
 	return result;
 }
 
-LibretroVulkan::OutputResult LibretroVulkan::RenderBlackOutput(u32 slot_index, u32* width, u32* height)
+LibretroOutput::Result LibretroVulkan::RenderBlackOutput(u32 slot_index, LibretroOutput::Image* image)
 {
 	if (s_rebuild_outputs.exchange(false, std::memory_order_acq_rel))
 		ReleaseOutputs();
 
-	*width = BLACK_IMAGE_WIDTH;
-	*height = BLACK_IMAGE_HEIGHT;
+	*image = {slot_index, 0, BLACK_IMAGE_WIDTH, BLACK_IMAGE_HEIGHT};
 	return DrawOutput(slot_index, false, BLACK_IMAGE_WIDTH, BLACK_IMAGE_HEIGHT);
 }
 
@@ -533,14 +535,15 @@ bool LibretroVulkan::OutputFailed()
 	return s_output_failed.load(std::memory_order_acquire);
 }
 
-void LibretroVulkan::SetOutputImage(u32 slot)
+bool LibretroVulkan::Present(const LibretroOutput::Image& image)
 {
 	const retro_hw_render_interface_vulkan* const iface = GetInterface();
 	if (!iface)
 	{
 		Console.Error("An output image was presented without the frontend's Vulkan context");
-		return;
+		return false;
 	}
 
-	iface->set_image(iface->handle, &s_output_slots[slot].image, 0, nullptr, iface->queue_index);
+	iface->set_image(iface->handle, &s_output_slots[image.slot].image, 0, nullptr, iface->queue_index);
+	return true;
 }

@@ -4,13 +4,18 @@ A libretro core project for PCSX2x6's NAMCO System 246 and System 256 arcade emu
 
 ## Status
 
-This is an experimental Windows x86-64 core. It runs arcade VMs on Vulkan and hands each frame to the frontend as a Vulkan image, at the GS output dimensions and display aspect ratio. Stereo audio output and two-player RetroPad input for JVS fighting layouts and basic digital drum controls are connected.
+This is an experimental Windows x86-64 core. It renders arcade VMs with Vulkan (default) or Direct3D 11 and hands each frame to the frontend as a GPU image, at the GS output dimensions and display aspect ratio. Stereo audio output and two-player RetroPad input for JVS fighting layouts and basic digital drum controls are connected.
 
-In-memory save states are supported through RetroArch's ordinary manual, automatic and undo save-state paths. A state loads only into the same core build and content with the same key settings, including BIOS, VU1 thread (MTVU), internal resolution and patches; other states are rejected without changing the running game. Save states do not restore dongles, save cards or BIOS companion files, and a state is rejected when those files have changed since it was saved. Rewind, run-ahead and netplay are not supported.
+In-memory save states are supported through RetroArch's ordinary manual, automatic and undo save-state paths. A state loads only into the same core build and content with the same key settings, including BIOS, VU1 thread (MTVU), renderer, internal resolution and patches; other states are rejected without changing the running game. Save states do not restore dongles, save cards or BIOS companion files, and a state is rejected when those files have changed since it was saved. Rewind, run-ahead and netplay are not supported.
 
 ## Requirements
 
-The frontend must provide a Vulkan video driver that supports libretro Vulkan context negotiation version 2; there is no software video fallback. RetroArch 1.22.2 switches to its Vulkan driver when this core is loaded, whatever video driver is configured. A frontend without Vulkan context negotiation version 2 cannot load the core.
+The **Renderer** core option selects the graphics API; there is no software video fallback and no automatic switch to another API.
+
+- **Vulkan** (default): the frontend must provide a Vulkan video driver that supports libretro Vulkan context negotiation version 2.
+- **Direct3D 11**: the frontend must provide a D3D11 video driver with the standard libretro D3D11 interface. The GS renders on its own D3D11 device on the frontend's adapter.
+
+RetroArch 1.22.2 switches to the matching video driver when this core loads content, whatever video driver is configured. If the selected API is unavailable, loading the content fails with a message.
 
 See the [known issues](docs/issues.md), [development roadmap](docs/roadmap.md), [M1 integration plan](docs/M1.md), and [upstream sources](docs/upstream.md).
 
@@ -37,7 +42,7 @@ Some games require the external [PCSX2x6 patches archive](https://github.com/PS2
 
 **Region Check Bypass** defaults to **Enabled** in Core Options. It controls the matching `Region check bypass` patch group; other compatibility patches keep their existing behavior. Close and reopen content after changing it. Enabling the option still requires a matching patch in the external archive; it does not generate a patch for unsupported games.
 
-Core Options are available in English and Simplified Chinese. Besides BIOS Image and Region Check Bypass, they offer **VU1 Thread (MTVU)** (Automatic by default), **Internal Resolution** (Native by default, up to 4x) and **Volume**. Volume applies immediately; the other options take effect when the content is closed and loaded again. Higher internal resolutions need more video memory.
+Core Options are available in English and Simplified Chinese. Besides BIOS Image and Region Check Bypass, they offer **VU1 Thread (MTVU)** (Automatic by default), **Renderer** (Vulkan by default, or Direct3D 11), **Internal Resolution** (Native by default, up to 4x) and **Volume**. Volume applies immediately; the other options take effect when the content is closed and loaded again. Higher internal resolutions need more video memory.
 
 `<save-root>` is `<save>/pcsx2x6` unless RetroArch already supplies a core-specific directory, such as `<save>/PCSX2x6` or `<save>/PCSX2x6/<content>`; that directory is used directly. No second `pcsx2x6` layer is added. The save root contains only per-game SRAM in `arcade/<gameid>/sram.bin` and optional save cards in `memcards/`. Variants sharing a GameID share their SRAM.
 

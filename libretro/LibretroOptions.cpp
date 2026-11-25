@@ -37,7 +37,7 @@ namespace
 	constexpr std::array<CategoryText, 3> CATEGORIES = {{
 		{CATEGORY_SYSTEM, {"System", "系统"},
 			{"BIOS image, compatibility patches and emulation threads.", "BIOS 镜像、兼容性补丁与模拟线程。"}},
-		{CATEGORY_VIDEO, {"Video", "视频"}, {"Internal resolution.", "内部分辨率。"}},
+		{CATEGORY_VIDEO, {"Video", "视频"}, {"Renderer and internal resolution.", "渲染器与内部分辨率。"}},
 		{CATEGORY_AUDIO, {"Audio", "音频"}, {"Output volume.", "输出音量。"}},
 	}};
 
@@ -86,18 +86,20 @@ namespace
 		"Close and reload content to apply the changed core options.",
 		"已修改的核心选项需关闭并重新加载内容后生效。"};
 
-	// Reserved for the renderer option (LibretroOptions::RENDERER_KEY). It is registered once a
-	// second backend passes acceptance; until then Vulkan is the only renderer.
-	[[maybe_unused]] constexpr Text RENDERER_DESC = {"Renderer", "渲染器"};
-	[[maybe_unused]] constexpr Text RENDERER_INFO = {
-		"Graphics API used by the GS. Close and reload content after changing this option.",
-		"GS 使用的图形接口。修改后需关闭并重新加载内容。"};
-	[[maybe_unused]] constexpr ValueText RENDERER_VULKAN = {"vulkan", {"Vulkan", "Vulkan"}};
+	constexpr Text RENDERER_DESC = {"Renderer", "渲染器"};
+	constexpr Text RENDERER_INFO = {
+		"Graphics API used by the GS. The frontend switches to the matching video driver. Close and reload content after changing this option.",
+		"GS 使用的图形接口。前端会切换到对应的视频驱动。修改后需关闭并重新加载内容。"};
+	// In the order of LibretroOptions::Renderer.
+	constexpr std::array<ValueText, 2> RENDERER_VALUES = {{
+		{"vulkan", {"Vulkan", "Vulkan"}},
+		{"d3d11", {"Direct3D 11", "Direct3D 11"}},
+	}};
 
 	constexpr unsigned VOLUME_STEP = 10;
 	constexpr unsigned VOLUME_MAX = 200;
 	constexpr size_t VOLUME_VALUE_COUNT = VOLUME_MAX / VOLUME_STEP + 1;
-	constexpr size_t OPTION_COUNT = 5;
+	constexpr size_t OPTION_COUNT = 6;
 
 	enum class Language
 	{
@@ -163,7 +165,15 @@ namespace
 		mtvu.default_value = "auto";
 		SetValues(mtvu.values, MTVU_VALUES.data(), MTVU_VALUES.size(), language);
 
-		retro_core_option_v2_definition& upscale = definitions[3];
+		retro_core_option_v2_definition& renderer = definitions[3];
+		renderer.key = LibretroOptions::RENDERER_KEY;
+		renderer.desc = Pick(RENDERER_DESC, language);
+		renderer.info = Pick(RENDERER_INFO, language);
+		renderer.category_key = CATEGORY_VIDEO;
+		renderer.default_value = RENDERER_VALUES[0].value;
+		SetValues(renderer.values, RENDERER_VALUES.data(), RENDERER_VALUES.size(), language);
+
+		retro_core_option_v2_definition& upscale = definitions[4];
 		upscale.key = LibretroOptions::UPSCALE_KEY;
 		upscale.desc = Pick(UPSCALE_DESC, language);
 		upscale.info = Pick(UPSCALE_INFO, language);
@@ -171,7 +181,7 @@ namespace
 		upscale.default_value = UPSCALE_VALUES[0].value;
 		SetValues(upscale.values, UPSCALE_VALUES.data(), UPSCALE_VALUES.size(), language);
 
-		retro_core_option_v2_definition& volume = definitions[4];
+		retro_core_option_v2_definition& volume = definitions[5];
 		volume.key = LibretroOptions::VOLUME_KEY;
 		volume.desc = Pick(VOLUME_DESC, language);
 		volume.info = Pick(VOLUME_INFO, language);
@@ -310,6 +320,20 @@ LibretroOptions::MtvuSetting LibretroOptions::GetMtvu(retro_environment_t enviro
 	if (value && std::strcmp(value, "disabled") == 0)
 		return MtvuSetting::Disabled;
 	return MtvuSetting::Automatic;
+}
+
+LibretroOptions::Renderer LibretroOptions::GetRenderer(retro_environment_t environment)
+{
+	// Only the offered stored values are accepted; anything else uses Vulkan.
+	if (const char* value = GetValue(environment, RENDERER_KEY))
+	{
+		for (size_t i = 0; i < RENDERER_VALUES.size(); i++)
+		{
+			if (std::strcmp(RENDERER_VALUES[i].value, value) == 0)
+				return static_cast<Renderer>(i);
+		}
+	}
+	return Renderer::Vulkan;
 }
 
 unsigned LibretroOptions::GetUpscaleMultiplier(retro_environment_t environment)

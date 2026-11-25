@@ -20,6 +20,7 @@
 #include "IconsFontAwesome.h"
 
 #include <bit>
+#include <optional>
 #include <fstream>
 #include <sstream>
 #include <VersionHelpers.h>
@@ -29,6 +30,40 @@
 // #define REPORT_LEAKED_OBJECTS 1
 
 static constexpr std::array<float, 4> s_present_clear_color = {};
+
+// The adapter a host requires the next device on; see SetRequiredAdapter().
+static std::optional<LUID> s_required_adapter;
+
+void GSDevice11::SetRequiredAdapter(const LUID* luid)
+{
+	s_required_adapter = luid ? std::optional<LUID>(*luid) : std::nullopt;
+}
+
+// The adapter with `luid`, or null when the factory has none or cannot enumerate its adapters.
+static wil::com_ptr_nothrow<IDXGIAdapter1> GetAdapterByLuid(IDXGIFactory5* factory, const LUID& luid)
+{
+	wil::com_ptr_nothrow<IDXGIAdapter1> adapter;
+	for (u32 index = 0;; index++)
+	{
+		const HRESULT hr = factory->EnumAdapters1(index, adapter.put());
+		if (hr == DXGI_ERROR_NOT_FOUND)
+			break;
+		if (FAILED(hr) || !adapter)
+		{
+			// A failure other than the end of the list leaves the remaining adapters unknown.
+			Console.ErrorFmt("D3D11: IDXGIFactory::EnumAdapters1({}) returned {:08X}.", index, static_cast<unsigned>(hr));
+			return {};
+		}
+
+		DXGI_ADAPTER_DESC1 desc;
+		if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.AdapterLuid.LowPart == luid.LowPart &&
+			desc.AdapterLuid.HighPart == luid.HighPart)
+		{
+			return adapter;
+		}
+	}
+	return {};
+}
 
 static bool SupportsTextureFormat(ID3D11Device* dev, DXGI_FORMAT format)
 {
@@ -107,7 +142,20 @@ bool GSDevice11::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	if (!m_dxgi_factory)
 		return false;
 
-	wil::com_ptr_nothrow<IDXGIAdapter1> dxgi_adapter = D3D::GetAdapterByName(m_dxgi_factory.get(), GSConfig.Adapter);
+	wil::com_ptr_nothrow<IDXGIAdapter1> dxgi_adapter;
+	if (s_required_adapter.has_value())
+	{
+		dxgi_adapter = GetAdapterByLuid(m_dxgi_factory.get(), *s_required_adapter);
+		if (!dxgi_adapter)
+		{
+			Console.Error("D3D11: The adapter the host requires is not present.");
+			return false;
+		}
+	}
+	else
+	{
+		dxgi_adapter = D3D::GetAdapterByName(m_dxgi_factory.get(), GSConfig.Adapter);
+	}
 
 	static constexpr std::array<D3D_FEATURE_LEVEL, 3> requested_feature_levels = {{
 		D3D_FEATURE_LEVEL_11_1,

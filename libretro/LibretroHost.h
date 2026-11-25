@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "LibretroOutput.h"
 #include "libretro.h"
 
 #include "common/Pcsx2Types.h"
@@ -39,6 +40,9 @@ namespace LibretroHost
 
 	/// The internal resolution multiplier the content prepared last was loaded with.
 	u32 GetUpscaleMultiplier();
+
+	/// The graphics backend the content prepared last was loaded with.
+	LibretroOutput::Backend GetBackend();
 
 	/// Frontend thread, once per retro_run: applies a changed volume and tells the player once
 	/// per content session that other changed options need the content to be loaded again.

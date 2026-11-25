@@ -11,12 +11,16 @@ target_sources(pcsx2x6_libretro PRIVATE
 	Libretro.cpp
 	LibretroAudio.cpp
 	LibretroAudio.h
+	LibretroD3D11.cpp
+	LibretroD3D11.h
 	LibretroHost.cpp
 	LibretroHost.h
 	LibretroInput.cpp
 	LibretroInput.h
 	LibretroOptions.cpp
 	LibretroOptions.h
+	LibretroOutput.cpp
+	LibretroOutput.h
 	LibretroSession.cpp
 	LibretroSession.h
 	LibretroState.cpp
@@ -25,6 +29,7 @@ target_sources(pcsx2x6_libretro PRIVATE
 	LibretroVulkan.cpp
 	LibretroVulkan.h
 	libretro.h
+	libretro_d3d11.h
 	libretro_vulkan.h
 )
 

@@ -8,7 +8,7 @@
 #include "LibretroSession.h"
 #include "LibretroState.h"
 #include "LibretroVersion.h"
-#include "LibretroVulkan.h"
+#include "LibretroOutput.h"
 #include "libretro.h"
 
 #include "VMManager.h"
@@ -176,10 +176,13 @@ void retro_init(void)
 
 void retro_deinit(void)
 {
+	// A frontend that deinitializes without destroying its context first still has it now; the
+	// frontend side gives up what it holds there before the GS closes.
+	LibretroOutput::DetachFrontend();
 	LibretroSession::Shutdown();
-	// Nothing runs on the frontend's device any more; a frontend that deinitializes without
-	// destroying its context releases that context afterwards.
-	LibretroVulkan::Unregister();
+	// Nothing runs on the frontend's device any more; such a frontend releases its context
+	// afterwards.
+	LibretroOutput::Unregister();
 	LibretroAudio::Uninstall();
 	LibretroAudio::ResetQueue();
 	// Assigning an empty vector keeps its capacity; exchanging releases the audio memory.
@@ -190,7 +193,7 @@ void retro_deinit(void)
 	s_initialized = false;
 }
 
-// Frontend thread, from context_reset: boots the prepared VM on the frontend's Vulkan context.
+// Frontend thread, from context_reset: boots the prepared VM on the frontend's graphics context.
 static void ContextFailed(const char* reason);
 static bool ContextReady()
 {
@@ -220,12 +223,13 @@ static bool ContextReady()
 // A lost context explains whatever follows from it, so it is reported instead of `reason`.
 static void ContextFailed(const char* reason)
 {
+	LibretroOutput::DetachFrontend();
 	LibretroSession::Stop();
 	LibretroSession::CloseGS();
 	if (!std::exchange(s_session_failed, true))
 	{
 		LibretroHost::ReportLoadFailure(s_context_lost ?
-				"The frontend's Vulkan context was lost; the content has to be loaded again." : reason);
+				"The frontend's graphics context was lost; the content has to be loaded again." : reason);
 		s_environment(RETRO_ENVIRONMENT_SHUTDOWN, nullptr);
 	}
 	s_context_lost = false;
@@ -236,6 +240,7 @@ static void ContextFailed(const char* reason)
 static void ContextLost()
 {
 	s_context_lost = LibretroSession::IsActive();
+	LibretroOutput::DetachFrontend();
 	LibretroSession::Stop();
 	LibretroSession::CloseGS();
 	LibretroHost::DrainLogMessages();
@@ -255,7 +260,7 @@ bool retro_load_game(const retro_game_info* game)
 		return false;
 	}
 
-	// The GS opens when the frontend creates the Vulkan device, and the VM boots once the
+	// The GS opens while the frontend sets up its graphics context, and the VM boots once the
 	// frontend's context is ready, both after this returns.
 	const u32 upscale_multiplier = LibretroHost::GetUpscaleMultiplier();
 	if (!LibretroSession::Prepare(std::move(boot_params), upscale_multiplier, &error))
@@ -264,10 +269,13 @@ bool retro_load_game(const retro_game_info* game)
 		return false;
 	}
 
-	if (!LibretroVulkan::Register(s_environment, {&ContextReady, &ContextFailed, &ContextLost}))
+	const LibretroOutput::Backend backend = LibretroHost::GetBackend();
+	if (!LibretroOutput::Register(s_environment, backend, {&ContextReady, &ContextFailed, &ContextLost}))
 	{
 		LibretroSession::Stop();
-		LibretroHost::ReportLoadFailure("This core needs a frontend Vulkan video driver with context negotiation v2.");
+		LibretroHost::ReportLoadFailure(backend == LibretroOutput::Backend::D3D11 ?
+				"The D3D11 renderer needs a frontend D3D11 video driver." :
+				"The Vulkan renderer needs a frontend Vulkan video driver with context negotiation v2.");
 		return false;
 	}
 
@@ -322,7 +330,7 @@ void retro_reset(void)
 		// Nothing from before the reset is presented or played afterwards; until the reset VM
 		// completes an image, the frontend sees a black frame.
 		s_presented_frame = {};
-		LibretroVulkan::ClearOutput();
+		LibretroOutput::ClearOutput();
 		s_frame_audio.data.clear();
 		LibretroAudio::DiscardQueued();
 	}
@@ -431,7 +439,13 @@ static void PresentFrame()
 		return;
 	}
 
-	LibretroVulkan::SetOutputImage(s_presented_frame.slot);
+	const LibretroOutput::Image image = {s_presented_frame.slot, s_presented_frame.generation, s_presented_frame.width,
+		s_presented_frame.height};
+	if (!LibretroOutput::Present(image))
+	{
+		ContextFailed("An output image could not be handed over to the frontend.");
+		return;
+	}
 	s_video_refresh(RETRO_HW_FRAME_BUFFER_VALID, s_presented_frame.width, s_presented_frame.height, 0);
 }
 
@@ -439,7 +453,7 @@ static void PresentFrame()
 // recreated around the same device, or ends the session when that interface cannot be used.
 static bool RefreshFrontendInterface()
 {
-	if (LibretroVulkan::RefreshInterface() != LibretroVulkan::InterfaceState::Invalid)
+	if (LibretroOutput::RefreshInterface() != LibretroOutput::InterfaceState::Invalid)
 		return true;
 
 	ContextFailed("The frontend recreated its video driver in a way the GS cannot continue on; the content has to be loaded again.");
@@ -464,9 +478,9 @@ void retro_run(void)
 	if (!RefreshFrontendInterface())
 		return;
 
-	if (LibretroVulkan::OutputFailed())
+	if (LibretroOutput::OutputFailed())
 	{
-		ContextFailed("An output image could not be created on the frontend's Vulkan device.");
+		ContextFailed("An output image could not be prepared for the frontend.");
 		return;
 	}
 
@@ -476,20 +490,20 @@ void retro_run(void)
 	// The frame is drawn into the image of the frontend's current sync index. A paused VM
 	// completes the request without running; the frame it presents again has no audio, and
 	// audio still queued from earlier frames waits until the VM runs again.
-	const u32 output_slot = LibretroVulkan::AcquireOutputSlot();
+	const u32 output_slot = LibretroOutput::AcquireOutputSlot();
 	const bool advanced = LibretroSession::RunFrame(SampleInput(), output_slot);
 
 	const bool new_frame = LibretroSession::TakeFrame(&s_presented_frame);
 
 	// Nothing has been shown since the content started or was reset, and the VM drew nothing,
 	// for instance while it is paused: black is shown instead.
-	if (!new_frame && s_presented_frame.width == 0 && !LibretroVulkan::OutputFailed())
+	if (!new_frame && s_presented_frame.width == 0 && !LibretroOutput::OutputFailed())
 		LibretroSession::DrawBlackFrame(output_slot, &s_presented_frame);
 
 	// An output image that could not be prepared ends the session before anything is presented.
-	if (LibretroVulkan::OutputFailed())
+	if (LibretroOutput::OutputFailed())
 	{
-		ContextFailed("An output image could not be created on the frontend's Vulkan device.");
+		ContextFailed("An output image could not be prepared for the frontend.");
 		return;
 	}
 
@@ -510,6 +524,8 @@ void retro_run(void)
 		return;
 
 	PresentFrame();
+	if (s_session_failed)
+		return;
 	if (advanced)
 		LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));
 	LibretroHost::DrainLogMessages();
@@ -538,7 +554,7 @@ bool retro_unserialize(const void* data, size_t size)
 			// Nothing of the replaced state is presented or played; until the restored VM
 			// completes an image, the frontend sees a black frame.
 			s_presented_frame = {};
-			LibretroVulkan::ClearOutput();
+			LibretroOutput::ClearOutput();
 			s_frame_audio.data.clear();
 			LibretroAudio::DiscardQueued();
 			LibretroHost::DrainLogMessages();

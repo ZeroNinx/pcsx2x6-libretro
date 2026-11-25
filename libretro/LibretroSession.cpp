@@ -4,7 +4,7 @@
 #include "LibretroSession.h"
 #include "LibretroHost.h"
 #include "LibretroInput.h"
-#include "LibretroVulkan.h"
+#include "LibretroOutput.h"
 
 #include "GS.h"
 #include "GS/GS.h"
@@ -429,14 +429,17 @@ static bool CaptureFrame(LibretroSession::Frame* frame)
 	const u32 slot = s_frame_slot;
 	u32 width = 0, height = 0;
 	float aspect_ratio = 0.0f;
-	LibretroVulkan::OutputResult result = LibretroVulkan::OutputResult::Unchanged;
-	MTGS::RunOnGSThread([slot, &width, &height, &aspect_ratio, &result]() {
-		result = LibretroVulkan::RenderOutput(slot, &width, &height);
+	LibretroOutput::Image image;
+	LibretroOutput::Result result = LibretroOutput::Result::Unchanged;
+	MTGS::RunOnGSThread([slot, &image, &aspect_ratio, &result]() {
+		result = LibretroOutput::RenderOutput(slot, &image);
 		aspect_ratio = GSGetDisplayAspectRatio();
 	});
 	MTGS::WaitGS(false, false, false);
-	if (result != LibretroVulkan::OutputResult::Drawn)
+	if (result != LibretroOutput::Result::Drawn)
 		return false;
+	width = image.width;
+	height = image.height;
 
 	// The frontend relies on these sizes, so a frame outside them is never published.
 	if (width == 0 || height == 0 || width > s_max_frame_size.width || height > s_max_frame_size.height ||
@@ -446,7 +449,8 @@ static bool CaptureFrame(LibretroSession::Frame* frame)
 		return false;
 	}
 
-	frame->slot = slot;
+	frame->slot = image.slot;
+	frame->generation = image.generation;
 	frame->width = width;
 	frame->height = height;
 	frame->aspect_ratio = aspect_ratio;
@@ -746,7 +750,7 @@ void LibretroSession::CloseGS()
 				return;
 
 			// The output images live on the GS device, so they go before it.
-			MTGS::RunOnGSThread(&LibretroVulkan::ReleaseOutputs);
+			MTGS::RunOnGSThread(&LibretroOutput::ReleaseOutputs);
 			MTGS::WaitGS(false, false, false);
 			MTGS::WaitForClose();
 		},
@@ -830,20 +834,23 @@ bool LibretroSession::DrawBlackFrame(u32 output_slot, Frame* frame)
 		return false;
 
 	// The GS belongs to the CPU thread, which serves this work whether the VM is parked or paused.
-	LibretroVulkan::OutputResult result = LibretroVulkan::OutputResult::Failed;
-	u32 width = 0, height = 0;
+	LibretroOutput::Result result = LibretroOutput::Result::Failed;
+	LibretroOutput::Image image;
 	RunOnCPUThread(
-		[output_slot, &result, &width, &height]() {
-			MTGS::RunOnGSThread([output_slot, &result, &width, &height]() {
-				result = LibretroVulkan::RenderBlackOutput(output_slot, &width, &height);
+		[output_slot, &result, &image]() {
+			MTGS::RunOnGSThread([output_slot, &result, &image]() {
+				result = LibretroOutput::RenderBlackOutput(output_slot, &image);
 			});
 			MTGS::WaitGS(false, false, false);
 		},
 		true);
-	if (result != LibretroVulkan::OutputResult::Drawn)
+	if (result != LibretroOutput::Result::Drawn)
 		return false;
 
-	frame->slot = output_slot;
+	const u32 width = image.width;
+	const u32 height = image.height;
+	frame->slot = image.slot;
+	frame->generation = image.generation;
 	frame->width = width;
 	frame->height = height;
 	frame->aspect_ratio = static_cast<float>(width) / static_cast<float>(height);

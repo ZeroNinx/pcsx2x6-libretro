@@ -142,6 +142,11 @@ namespace ImGuiManager
 
 	/// Strips icon characters from a string.
 	std::string StripIconCharacters(std::string_view str);
+
+	/// Sets whether the host presents OSD messages. A host that never renders the OSD disables
+	/// it, so posted and removed messages are only logged instead of queued without ever being
+	/// consumed. Enabled by default.
+	void SetOSDMessagesPresented(bool presented);
 } // namespace ImGuiManager
 
 namespace Host

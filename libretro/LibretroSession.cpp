@@ -757,20 +757,38 @@ void LibretroSession::CloseGS()
 		true);
 }
 
-bool LibretroSession::RunFrame(const InputSnapshot& input, u32 output_slot)
+LibretroSession::FrameResult LibretroSession::RunFrame(
+	const InputSnapshot& input, u32 output_slot, LibretroAudio::Samples* audio)
 {
+	FrameResult result;
 	std::unique_lock lock(s_mutex);
-	if (s_session_state != SessionState::Active)
-		return false;
+	if (s_session_state == SessionState::Active)
+	{
+		s_requested_input = input;
+		s_requested_slot = output_slot;
+		const u64 request = ++s_requested_frames;
+		s_cv.notify_all();
 
-	s_requested_input = input;
-	s_requested_slot = output_slot;
-	const u64 request = ++s_requested_frames;
-	s_cv.notify_all();
+		WaitWithDiagnostics(lock, "the next frame",
+			[request]() { return s_completed_frames >= request || s_session_state != SessionState::Active; });
+		result.advanced = (s_completed_frames >= request && s_request_advanced);
+	}
 
-	WaitWithDiagnostics(lock, "the next frame",
-		[request]() { return s_completed_frames >= request || s_session_state != SessionState::Active; });
-	return (s_completed_frames >= request && s_request_advanced);
+	// Everything published up to now is taken under the same lock, so it describes one point.
+	if (s_frame_published)
+	{
+		result.new_frame = true;
+		result.frame = s_published_frame;
+		s_frame_published = false;
+	}
+	result.vsync_frequency = s_vsync_frequency;
+	if (result.advanced)
+	{
+		audio->data.clear();
+		audio->discarded_frames = 0;
+		std::swap(s_published_audio, *audio);
+	}
+	return result;
 }
 
 bool LibretroSession::Reset()
@@ -855,32 +873,6 @@ bool LibretroSession::DrawBlackFrame(u32 output_slot, Frame* frame)
 	frame->height = height;
 	frame->aspect_ratio = static_cast<float>(width) / static_cast<float>(height);
 	return true;
-}
-
-bool LibretroSession::TakeFrame(Frame* frame)
-{
-	std::unique_lock lock(s_mutex);
-	if (!s_frame_published)
-		return false;
-
-	*frame = s_published_frame;
-	s_frame_published = false;
-	return true;
-}
-
-double LibretroSession::GetVsyncFrequency()
-{
-	std::unique_lock lock(s_mutex);
-	return s_vsync_frequency;
-}
-
-void LibretroSession::TakeAudio(LibretroAudio::Samples* samples)
-{
-	samples->data.clear();
-	samples->discarded_frames = 0;
-
-	std::unique_lock lock(s_mutex);
-	std::swap(s_published_audio, *samples);
 }
 
 void LibretroSession::Stop()

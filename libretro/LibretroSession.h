@@ -76,11 +76,27 @@ namespace LibretroSession
 	/// when the GS is not open.
 	void CloseGS();
 
+	/// What one frame request produced.
+	struct FrameResult
+	{
+		/// The VM ran to its next vsync. False when there is no active session or a paused VM
+		/// completed the request without running, leaving the input unapplied apart from its
+		/// device changes.
+		bool advanced = false;
+		/// A new image was published since the previous request; `frame` describes it.
+		bool new_frame = false;
+		Frame frame;
+		/// Emulated vsync frequency in Hz when the latest frame completed, image or not; 0 while
+		/// the session has not completed a frame in an initialized video mode.
+		double vsync_frequency = 0.0;
+	};
+
 	/// Requests one frame with the given input, drawn into `output_slot`: the VM advances to its
-	/// next vsync and no further. Returns once that frame has been completed and published: true when the VM
-	/// advanced, false when there is no active session or a paused VM completed the request
-	/// without running, leaving the input unapplied apart from its device changes.
-	bool RunFrame(const InputSnapshot& input, u32 output_slot);
+	/// next vsync and no further. Returns once that frame has been completed and published, with
+	/// its result. When the VM advanced, the audio of the frames completed since the previous
+	/// such request is moved into `audio`; each completion contributes exactly the frames SPU2
+	/// had committed by its vsync. Otherwise `audio` is left untouched.
+	FrameResult RunFrame(const InputSnapshot& input, u32 output_slot, LibretroAudio::Samples* audio);
 
 	/// Resets the VM of the active session on the CPU thread. Returns true once the reset has
 	/// actually happened, leaving the VM running or paused as before and waiting for the next
@@ -116,18 +132,6 @@ namespace LibretroSession
 	/// produced no image while nothing has been shown yet. Returns false, leaving `frame`
 	/// untouched, without an active session or when the image cannot be drawn.
 	bool DrawBlackFrame(u32 output_slot, Frame* frame);
-
-	/// Copies the frame published since the previous call into `frame`. Returns false, leaving
-	/// `frame` untouched, when no new frame was published.
-	bool TakeFrame(Frame* frame);
-
-	/// Emulated vsync frequency in Hz when the latest frame completed, image or not; 0 while
-	/// the session has not completed a frame in an initialized video mode.
-	double GetVsyncFrequency();
-
-	/// Moves the audio of the frames completed since the previous call into `samples`. Each
-	/// completion contributes exactly the frames SPU2 had committed by its vsync.
-	void TakeAudio(LibretroAudio::Samples* samples);
 
 	/// Stops the active VM, if any, and waits until it has shut down. Discards prepared boot
 	/// parameters and returns the frame limit to native resolution; the GS stays open until

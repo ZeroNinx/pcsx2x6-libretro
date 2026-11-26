@@ -141,6 +141,8 @@ void LibretroHost::DrainLogMessages()
 void LibretroHost::InitializeLogging()
 {
 	Log::SetHostOutputLevel(LOGLEVEL_INFO, &QueueLogMessage);
+	// The core never renders the emulator's OSD; its messages reach the frontend through the log.
+	ImGuiManager::SetOSDMessagesPresented(false);
 }
 
 void LibretroHost::ShutdownLogging()

@@ -31,6 +31,7 @@
 #include "common/Image.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <deque>
@@ -798,6 +799,13 @@ struct OSDMessage
 static std::deque<OSDMessage> s_osd_active_messages;
 static std::deque<OSDMessage> s_osd_posted_messages;
 static std::mutex s_osd_messages_lock;
+// Cleared by hosts that never render the OSD; see SetOSDMessagesPresented().
+static std::atomic_bool s_osd_messages_presented{true};
+
+void ImGuiManager::SetOSDMessagesPresented(bool presented)
+{
+	s_osd_messages_presented.store(presented, std::memory_order_release);
+}
 
 void Host::AddOSDMessage(std::string message, float duration /*= 2.0f*/)
 {
@@ -810,6 +818,9 @@ void Host::AddKeyedOSDMessage(std::string key, std::string message, float durati
 		Console.WriteLn(Color_StrongGreen, fmt::format("OSD [{}]: {}", key, message));
 	else
 		Console.WriteLn(Color_StrongGreen, fmt::format("OSD: {}", message));
+
+	if (!s_osd_messages_presented.load(std::memory_order_acquire))
+		return;
 
 	const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
 
@@ -833,6 +844,9 @@ void Host::AddIconOSDMessage(std::string key, const char* icon, const std::strin
 	else
 		Console.WriteLn(Color_StrongGreen, fmt::format("OSD: {}", message));
 
+	if (!s_osd_messages_presented.load(std::memory_order_acquire))
+		return;
+
 	const Common::Timer::Value current_time = Common::Timer::GetCurrentValue();
 
 	OSDMessage msg = {};
@@ -850,6 +864,9 @@ void Host::AddIconOSDMessage(std::string key, const char* icon, const std::strin
 
 void Host::RemoveKeyedOSDMessage(std::string key)
 {
+	if (!s_osd_messages_presented.load(std::memory_order_acquire))
+		return;
+
 	OSDMessage msg = {};
 	msg.key = std::move(key);
 	msg.duration = 0.0f;

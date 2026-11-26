@@ -74,6 +74,9 @@ namespace
 	// Set once a failure of the loaded content has been reported, so that one failure is
 	// reported once however many callbacks observe it.
 	bool s_session_failed = false;
+
+	// Whether the frontend reports every joypad button of a port in one input query.
+	bool s_input_bitmasks = false;
 } // namespace
 
 void retro_set_environment(retro_environment_t cb)
@@ -282,6 +285,8 @@ bool retro_load_game(const retro_game_info* game)
 	s_missing_image_reported = false;
 	s_context_lost = false;
 	s_session_failed = false;
+	s_input_bitmasks = s_environment(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, nullptr);
+	Console.WriteLn(s_input_bitmasks ? "Joypad buttons are read as bitmasks" : "Joypad buttons are read one at a time");
 
 	// States exist only once the VM runs, and their length follows its memory contents. The
 	// frontend's answer is logged: RetroArch 1.22.2 does not acknowledge variable sizes, though
@@ -351,6 +356,14 @@ static LibretroSession::InputSnapshot SampleInput()
 		if (!input.connected[port])
 			continue;
 
+		// Bit N of the mask is RETRO_DEVICE_ID_JOYPAD_* button N; R3 is the highest one used.
+		if (s_input_bitmasks)
+		{
+			constexpr u32 BUTTON_MASK = (1u << (RETRO_DEVICE_ID_JOYPAD_R3 + 1)) - 1;
+			const u32 mask = static_cast<u16>(s_input_state(port, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK));
+			input.joypad_buttons[port] = static_cast<u16>(mask & BUTTON_MASK);
+			continue;
+		}
 		for (u32 button = 0; button <= RETRO_DEVICE_ID_JOYPAD_R3; button++)
 		{
 			if (s_input_state(port, RETRO_DEVICE_JOYPAD, 0, button))
@@ -374,8 +387,9 @@ static bool IsSameFrameRate(double first, double second)
 
 // Tells the frontend about geometry and timing changes before it receives the output they
 // apply to. Timing changes need the full AV information; size and aspect alone do not, as
-// every frame stays within the maximum size reported from the start.
-static void AnnounceOutputChanges()
+// every frame stays within the maximum size reported from the start. Returns whether an update
+// was sent, accepted or not.
+static bool AnnounceOutputChanges(double session_fps)
 {
 	retro_system_av_info target = s_accepted_av;
 	if (s_presented_frame.width != 0)
@@ -385,7 +399,6 @@ static void AnnounceOutputChanges()
 		target.geometry.aspect_ratio = s_presented_frame.aspect_ratio;
 	}
 
-	const double session_fps = LibretroSession::GetVsyncFrequency();
 	if (session_fps > 0.0)
 		target.timing.fps = session_fps;
 	if (s_frame_audio.sample_rate > 0)
@@ -394,7 +407,7 @@ static void AnnounceOutputChanges()
 	const bool timing_changed = !IsSameFrameRate(target.timing.fps, s_accepted_av.timing.fps) ||
 								target.timing.sample_rate != s_accepted_av.timing.sample_rate;
 	if (!timing_changed && IsSameGeometry(target.geometry, s_accepted_av.geometry))
-		return;
+		return false;
 
 	const bool accepted = timing_changed ? s_environment(RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO, &target) :
 										   s_environment(RETRO_ENVIRONMENT_SET_GEOMETRY, &target.geometry);
@@ -406,7 +419,7 @@ static void AnnounceOutputChanges()
 		else
 			s_accepted_av.geometry = target.geometry;
 		s_update_rejected = false;
-		return;
+		return true;
 	}
 
 	// The update is retried with the next frame; frames still carry their own size meanwhile.
@@ -414,7 +427,7 @@ static void AnnounceOutputChanges()
 		IsSameFrameRate(target.timing.fps, s_rejected_av.timing.fps) &&
 		target.timing.sample_rate == s_rejected_av.timing.sample_rate)
 	{
-		return;
+		return true;
 	}
 
 	if (timing_changed)
@@ -425,6 +438,7 @@ static void AnnounceOutputChanges()
 			target.geometry.base_width, target.geometry.base_height, target.geometry.aspect_ratio);
 	s_rejected_av = target;
 	s_update_rejected = true;
+	return true;
 }
 
 // Hands the latest image to the frontend, the previous one again when the frame has no new
@@ -491,13 +505,13 @@ void retro_run(void)
 	// completes the request without running; the frame it presents again has no audio, and
 	// audio still queued from earlier frames waits until the VM runs again.
 	const u32 output_slot = LibretroOutput::AcquireOutputSlot();
-	const bool advanced = LibretroSession::RunFrame(SampleInput(), output_slot);
-
-	const bool new_frame = LibretroSession::TakeFrame(&s_presented_frame);
+	const LibretroSession::FrameResult result = LibretroSession::RunFrame(SampleInput(), output_slot, &s_frame_audio);
+	if (result.new_frame)
+		s_presented_frame = result.frame;
 
 	// Nothing has been shown since the content started or was reset, and the VM drew nothing,
 	// for instance while it is paused: black is shown instead.
-	if (!new_frame && s_presented_frame.width == 0 && !LibretroOutput::OutputFailed())
+	if (!result.new_frame && s_presented_frame.width == 0 && !LibretroOutput::OutputFailed())
 		LibretroSession::DrawBlackFrame(output_slot, &s_presented_frame);
 
 	// An output image that could not be prepared ends the session before anything is presented.
@@ -507,26 +521,25 @@ void retro_run(void)
 		return;
 	}
 
-	if (advanced)
-		LibretroSession::TakeAudio(&s_frame_audio);
-	AnnounceOutputChanges();
+	const bool announced = AnnounceOutputChanges(result.vsync_frequency);
 
 	// An AV update can make the frontend recreate its video driver within this call. When it
 	// keeps the device, the frame goes to the new driver; when it destroyed the context the
-	// frame was drawn on, nothing of the frame is delivered.
+	// frame was drawn on, nothing of the frame is delivered. Without an update the interface
+	// checked at the start of this frame is still current.
 	if (s_context_lost || s_session_failed)
 	{
 		if (s_context_lost)
 			ContextFailed(nullptr);
 		return;
 	}
-	if (!RefreshFrontendInterface())
+	if (announced && !RefreshFrontendInterface())
 		return;
 
 	PresentFrame();
 	if (s_session_failed)
 		return;
-	if (advanced)
+	if (result.advanced)
 		LibretroAudio::Submit(s_audio_batch, s_frame_audio, static_cast<u32>(s_accepted_av.timing.sample_rate));
 	LibretroHost::DrainLogMessages();
 }

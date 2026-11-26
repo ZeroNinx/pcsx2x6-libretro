@@ -1,49 +1,46 @@
 # Known Issues
 
-Open compatibility issues include emulator defects and frontend integration limitations. Their scope and follow-up are listed below; a working input mapping or completed reset request does not establish full input or emulator-reset correctness.
-
-| ID | Issue | Status | Follow-up |
-| --- | --- | --- | --- |
-| ISSUE-001 | Missed drum hits in fast charts | Sustained-level overlap suppression fixed in the libretro input path | Same-frame arbitration and missed frontend samples remain outside the fix |
-| ISSUE-002 | Reset failure after arcade execution | Also reproducible in standalone PCSX2x6; upstream defect unresolved | Separate emulator reset investigation |
-| ISSUE-003 | Excess audio after resetting a running VM | Observed in the core; suspected SPU2 timing cause unverified | Investigate with ISSUE-002 |
-| ISSUE-004 | Video-driver recreation on another device or queue ends the content session | Fullscreen switching and other recreation preserving the device and graphics queue keep the session; a different device or queue still ends content | None planned; recovery onto another device is unsupported |
-| ISSUE-005 | Higher CPU power with RTSS frame limiting | Reported on handheld hardware; the hardware power-response mechanism remains unconfirmed | Set the RTSS frame limit for RetroArch to 0; recheck after performance work |
+| ID | Issue | Status |
+| --- | --- | --- |
+| ISSUE-001 | Missed drum hits in fast charts | Held-input overlap fixed; other timing limits remain |
+| ISSUE-002 | Reset failure after arcade execution | Open |
+| ISSUE-003 | Excess audio after resetting a running VM | Open |
+| ISSUE-004 | Video-driver recreation on another device or queue ends the content session | Cross-device recovery unsupported |
+| ISSUE-005 | Higher CPU power with RTSS frame limiting | Workaround available |
+| ISSUE-007 | Unreproduced exit crash after a save-state session | Not reproduced |
 
 ## ISSUE-001: Missed drum hits in fast charts
 
-NM00054 can miss drum input during fast charts. Similar behavior has been reported in standalone PCSX2x6. Sustained full-scale values from overlapping digital buttons can cause the game to suppress a later hit: equal-amplitude signals favor Don over Ka and left Ka over right Ka. The core now converts each digital drum press into a one-guest-frame pulse instead of sustaining the sensor while the button is held.
+Each digital drum press now produces a one-guest-frame pulse. This fixes later hits being suppressed by overlapping held buttons. Holding a button does not repeat the hit.
 
-The one-frame pulse addresses sustained-level overlap suppression; it does not establish full high-speed chart accuracy. It preserves the game's arbitration for genuinely simultaneous hits and cannot recover a short press missed by frontend sampling. Other missed-hit mechanisms require separate investigation.
+Different drum parts struck in the same frame still follow the game's input rules. A short press that the frontend does not sample cannot be recovered by the core.
 
 ## ISSUE-002: Reset failure after arcade execution
 
-Resetting NM00002 after it has been running can fail during the subsequent boot, with TLB misses and the assertion `FQC = 0 on VIF FIFO READ!`. Both running and paused VM reset paths are affected, and standalone PCSX2x6 can reproduce the failure. Reset before the first frame has not shown the same failure.
+Resetting NM00002 after gameplay can fail during reboot. Both running and paused resets are affected, and the problem also occurs in standalone PCSX2x6.
 
-**Workaround:** close the content and load it again when restarting a running title. The core preserves the emulator's reset behavior; it does not substitute content reload or suppress assertions.
-
-The core's CPU-thread dispatch, refusal handling, completion acknowledgement and output/input cleanup are separate from the emulator's ability to continue executing after reset. The underlying failure remains unresolved. Differences between initial arcade-device setup and reset are an investigation lead, not a confirmed cause. Any emulator fix should remain separate from libretro integration.
+**Workaround:** close the content and load it again instead of using reset.
 
 ## ISSUE-003: Excess audio after resetting a running VM
 
-After a VM has executed, its first frame following reset can contain more audio than a normal frame. The extra samples are generated after reset rather than retained from before it. Reset before the first `retro_run` has instead produced no audio on the following first frame.
-
-A possible cause is SPU2 clock state: `SPU2::Reset()` does not synchronize `lClocks` with the IOP cycle counter as `SPU2::Open()` does. This may trigger catch-up mixing after the IOP counter resets. That explanation is based on source analysis and has not been confirmed by tracing the clocks; the matching reset code in PCSX2 does not establish an independently reproduced PCSX2 bug.
-
-The excess remains within the bounded frontend queue. Its audibility and sample contents are not established. Investigate it with ISSUE-002; the libretro layer does not trim or compensate for it as a workaround.
+The first frame after reset can generate extra audio. The cause and audible effect remain unconfirmed. Use the close-and-reload workaround for ISSUE-002.
 
 ## ISSUE-004: Video-driver recreation on another device or queue ends the content session
 
-The direct Vulkan-image path requests context caching and refreshes the frontend render interface at frame boundaries. When a video-driver recreation preserves the device and graphics queue, the VM continues and the latest valid image is handed to the new driver, including while the VM is paused.
-
-If the context is destroyed or the replacement interface cannot use the GS device and queue, the core ends the session and reports the failure once. Recovery onto a different device or queue is unsupported. The fullscreen-switch case this issue was opened for is resolved in RetroArch.
+Normal fullscreen switching works when the frontend keeps the graphics device. Switching to another device ends the content session; Vulkan also requires the same graphics queue. Reload the content after such a change.
 
 ## ISSUE-005: Higher CPU power with RTSS frame limiting
 
-On some handheld systems, enabling RivaTuner Statistics Server (RTSS) frame limiting at 60 frames per second can considerably increase CPU and system power with this core while frame rate and emulation speed remain normal. The size of the increase can differ between cores and workloads.
+On some handheld systems, RTSS frame limiting at 60 FPS can increase CPU power while the game remains at normal speed. RTSS adds CPU work in the frontend's presentation path; its interaction with processor power management is not fully understood.
 
-RTSS deadline waiting adds CPU execution in the frontend's presentation path. A resulting change in processor power state is a possible explanation for the power increase, not a confirmed cause. Voltage and hardware idle-state residency have not been measured, and no core-side busy-wait defect has been identified in the reviewed Vulkan path.
+**Workaround:** set the RTSS frame limit for RetroArch to **0**. RetroArch's video and audio synchronization provide pacing. RTSS can remain running for its overlay.
 
-**Workaround:** set the RTSS frame limit for RetroArch to **0**. With vertical sync and audio sync enabled, RetroArch already paces this core at the content frame rate. RTSS can remain running for its other functions, such as its overlay.
+## ISSUE-007: Unreproduced exit crash after a save-state session
 
-Reducing the core's CPU load may reduce the effect, but this is unconfirmed. Recheck the limit-0 versus limit-60 behavior after performance changes.
+An exit crash after save-state operations in NM00054 has been reported but not reproduced. If it recurs, retain the session log and note the exit action and renderer.
+
+## Frontend pause and video-driver recreation
+
+In RetroArch 1.22.2, changing display mode while paused can leave a black screen until the content resumes. This affects both Vulkan and Direct3D 11.
+
+**Workaround:** resume the content after changing display mode.

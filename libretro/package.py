@@ -92,8 +92,8 @@ def main():
             "source trees used by the build, including nested dependencies and their licenses. "
             "The manifest identifies the binary and hashes the project source files. "
             "Extract it separately from the RetroArch installation.\n\n"
-            "Build instructions and dependency build recipes are in the source tree's root "
-            "README and libretro/deps/. Standard dependency configuration fetches the pinned "
+            "Build instructions are in docs/building.md in the source tree, with dependency "
+            "recipes in libretro/deps/. Standard dependency configuration fetches the pinned "
             "revisions; the included dependency sources are also available for rebuilding. "
             "This source archive must accompany redistribution of this test binary.\n",
             encoding="utf-8")

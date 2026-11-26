@@ -1,96 +1,26 @@
 # pcsx2x6-libretro
 
-A libretro core project for PCSX2x6's NAMCO System 246 and System 256 arcade emulation, designed to be loaded by frontends such as RetroArch.
+A [libretro](https://www.libretro.com/) core for NAMCO System 246 and System 256 arcade games, based on [PCSX2x6](https://github.com/PS2Homebrew-arcade/pcsx2x6).
 
-## Status
+The core is experimental. It supports Windows x64 with Vulkan (default) or Direct3D 11, two-player fighting and digital drum controls, and save states. Core options are available in English and Simplified Chinese.
 
-This is an experimental Windows x86-64 core. It renders arcade VMs with Vulkan (default) or Direct3D 11 and hands each frame to the frontend as a GPU image, at the GS output dimensions and display aspect ratio. Stereo audio output and two-player RetroPad input for JVS fighting layouts and basic digital drum controls are connected.
+## Getting started
 
-In-memory save states are supported through RetroArch's ordinary manual, automatic and undo save-state paths. A state loads only into the same core build and content with the same key settings, including BIOS, VU1 thread (MTVU), renderer, internal resolution and patches; other states are rejected without changing the running game. Save states do not restore dongles, save cards or BIOS companion files, and a state is rejected when those files have changed since it was saved. Rewind, run-ahead and netplay are not supported.
+1. Extract the core package into your RetroArch installation. If you use custom directories, copy the core, info and system files to their configured locations.
+2. Put your COH-H arcade BIOS in `system/pcsx2x6/bios/` and the game's working dongle dump in `system/pcsx2x6/memcards/`.
+3. Open the game's `.acgame` manifest in RetroArch and select PCSX2x6.
 
-## Requirements
-
-The **Renderer** core option selects the graphics API; there is no software video fallback and no automatic switch to another API.
-
-- **Vulkan** (default): the frontend must provide a Vulkan video driver that supports libretro Vulkan context negotiation version 2.
-- **Direct3D 11**: the frontend must provide a D3D11 video driver with the standard libretro D3D11 interface. The GS renders on its own D3D11 device on the frontend's adapter.
-
-RetroArch 1.22.2 switches to the matching video driver when this core loads content, whatever video driver is configured. If the selected API is unavailable, loading the content fails with a message.
-
-See the [known issues](docs/issues.md), [development roadmap](docs/roadmap.md), [M1 integration plan](docs/M1.md), and [upstream sources](docs/upstream.md).
-
-## Installing and running
-
-Extract the test package into your RetroArch directory. It supplies these paths:
-
-```text
-cores/pcsx2x6_libretro.dll
-info/pcsx2x6_libretro.info
-system/pcsx2x6/resources/
-docs/pcsx2x6/
-```
-
-If RetroArch uses custom core, core-info or system directories, copy each item to the corresponding configured location instead. Restart RetroArch after installing the core information file. Load Content can then offer PCSX2x6 for `.acgame` files. For playlists, use Manual Scan with the `acgame` extension; manifests are not matched by a ROM database scan.
-
-If old core information persists, close RetroArch and remove `core_info.cache` from its configured core-info directory so it can be rebuilt.
-
-1. Put your COH-H arcade BIOS dump and all same-stem companion files in `<system>/pcsx2x6/bios/`. BIOS Image defaults to **Automatic**, which selects the first valid arcade BIOS in filename order, regardless of extension. If several are available, choose the required image in Core Options and reopen the content. Automatic discovery identifies arcade BIOS images; it does not determine which BIOS revision is compatible with every game.
-2. Put the working dongle named by `dongle=` in `<system>/pcsx2x6/memcards/`. It contains boot/security data, not game saves. x6 can write to it, so retain an original separately. If the manifest specifies `card=`, put that separate save card in `<save-root>/memcards/`.
-3. Open the game's `.acgame` manifest with this core. Keep its ELF and media paths valid; existing PCSX2x6 manifests are used directly. A BIOS and game files are not included in the package.
-
-Some games require the external [PCSX2x6 patches archive](https://github.com/PS2Homebrew-arcade/pcsx2x6_patches/releases). Place it at `<system>/pcsx2x6/resources/patches.zip`. It is not included in this package. NM00002 does not require a patch; NM00054 requires its Region check bypass. See [resource compatibility](docs/M2.md#resources-and-patch-ownership) for the archive revision supported by this emulation base.
-
-**Region Check Bypass** defaults to **Enabled** in Core Options. It controls the matching `Region check bypass` patch group; other compatibility patches keep their existing behavior. Close and reopen content after changing it. Enabling the option still requires a matching patch in the external archive; it does not generate a patch for unsupported games.
-
-Core Options are available in English and Simplified Chinese. Besides BIOS Image and Region Check Bypass, they offer **VU1 Thread (MTVU)** (Automatic by default), **Renderer** (Vulkan by default, or Direct3D 11), **Internal Resolution** (Native by default, up to 4x) and **Volume**. Volume applies immediately; the other options take effect when the content is closed and loaded again. Higher internal resolutions need more video memory.
-
-`<save-root>` is `<save>/pcsx2x6` unless RetroArch already supplies a core-specific directory, such as `<save>/PCSX2x6` or `<save>/PCSX2x6/<content>`; that directory is used directly. No second `pcsx2x6` layer is added. The save root contains only per-game SRAM in `arcade/<gameid>/sram.bin` and optional save cards in `memcards/`. Variants sharing a GameID share their SRAM.
-
-BIOS files are loaded directly from `<system>/pcsx2x6/bios/`; their `.nvm`/`.mec` companions retain x6's board-state behavior in that folder. Shader caches go in `<system>/pcsx2x6/cache/`, and `playtime.dat` is kept in `<system>/pcsx2x6/`. The system area must allow these runtime writes. Unused emulator directories are not created. The system and save roots must be separate.
-
-### Controls
-
-Both ports use RetroPad. For fighting layouts, the four face buttons follow x6's PS2 positions: Square → Y, Cross → B, Circle → A, Triangle → X. Directions and Start retain their usual meanings. Select inserts a coin, L3 is Service, and port 1 R3 toggles Test Mode. In Test Mode, use the game's menu to exit and save.
-
-In drum mode, Left = left Ka, Down = left Don, B = right Don, A = right Ka, independently for each player. Each press produces a one-guest-frame hit; holding a button does not repeat it. After starting content, loading a state, resetting or reconnecting a port, release held drum buttons before striking again. Drum mode does not drive JVS direction bits. High-speed drum input and reset after gameplay have [known issues](docs/issues.md); close and reopen content instead of using reset.
+Some games also need an external patches archive. See the [setup guide](docs/usage.md) for required files, core options, controls and save-state compatibility, and [known issues](docs/issues.md) for current limitations.
 
 ## Building
 
-Windows x86-64 with Visual Studio 2022, CMake, Ninja, Git, and Python 3 is currently supported. From a Visual Studio x64 developer prompt:
+Build with Visual Studio 2022, CMake, Ninja, Git and Python 3. See [building and packaging](docs/building.md) for the commands.
 
-```text
-cmake -S libretro/deps -B build/deps -G Ninja -DCMAKE_INSTALL_PREFIX=<dependency-prefix>
-cmake --build build/deps
-cmake -S . -B build/core -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=<dependency-prefix>
-cmake --build build/core --target pcsx2x6_libretro
-```
+## Documentation
 
-The core is written to `build/core/bin/pcsx2x6_libretro.dll`.
-
-Stage the runtime layout for a RetroArch installation with:
-
-```text
-cmake --install build/core --component Libretro --prefix build/package
-```
-
-To create a ZIP with the core, metadata, runtime resources, notices and source snapshot:
-
-```text
-python libretro/package.py --build-dir build/core --dependency-build-dir build/deps --output-dir build/dist
-```
-
-Binary distributions must retain the license notices and be accompanied by the corresponding source, including the dependency sources used to build them. The dependency recipes are in `libretro/deps/`.
-
-## Upstream projects
-
-- [PCSX2](https://github.com/PCSX2/pcsx2): the upstream PlayStation 2 emulator.
-- [PCSX2x6](https://github.com/PS2Homebrew-arcade/pcsx2x6): the source of System 246 and System 256 arcade support.
-- [PCEE2](https://github.com/WizzardSK/pcee2-libretro) and [paraLLEl-PS2](https://github.com/libretro/parallel-ps2): references for libretro integration.
-
-This project is independent and is not affiliated with or endorsed by these projects.
+- [Development roadmap](docs/roadmap.md)
+- [Upstream sources and changes](docs/upstream.md)
 
 ## License
 
-GNU General Public License, version 3. See [COPYING.GPLv3](COPYING.GPLv3).
-
-Imported upstream source keeps its copyright and license notices, including the notices of third-party components under `3rdparty/`.
+[GNU General Public License, version 3](COPYING.GPLv3). Upstream and third-party copyright and license notices are preserved in the source tree.

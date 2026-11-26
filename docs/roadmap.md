@@ -1,6 +1,6 @@
 # Development Roadmap
 
-This document defines milestone boundaries and acceptance criteria. Each milestone has its own progress and planning document. M1, M2, [M3](M3.md) and [M4](M4.md) are complete; [M5](M5.md) has completed its capability audit and save-state design, prioritizing core features before optional compatibility and performance work.
+M1 through [M4](M4.md) are complete. [M5](M5.md) has implemented the selected core features; final acceptance and packaging remain. The sections below describe each milestone's scope and acceptance criteria.
 
 ## Objective and initial scope
 
@@ -124,7 +124,7 @@ Use bounded, repeatable windows at the same checkpoint and settings. Measure unc
 
 [M5](M5.md) has completed its capability and arcade-state design, localized core options, selected input-validation scope and in-memory save states. Standard-layout real-game coverage remains unverified. Save states reuse PCSX2x6's state engine with supplemented arcade-device state, checked bounded storage and actual-length states; they load only into the same build, content and key settings. Lifecycle coverage now includes reinitialization within a resident library and deinitialization with an active session. M5.5a compared D3D11, D3D12 and OpenGL against the target frontend's actual interfaces and added Direct3D 11 as a selectable renderer, keeping Vulkan as the default. Save states require complete guest/device state, safe worker synchronization, explicit persistence rules and bounded restore validation; connecting the API alone is insufficient. Rewind, runahead and netplay require separate assessment.
 
-Additional graphics-backend support is selected through M5.5a. The original performance, System256/Super256/media, ARM64, VFS and peripheral candidates remain available. Each needs an identified use case and its own bounded design and acceptance evidence; all are not required for one release. Existing System256 and digital drum support provide limited coverage, not complete board or peripheral compatibility.
+M5.6 closes candidate assessment with no further feature implementation selected for this release. Performance, further backends, additional board/media coverage, ARM64, VFS and peripheral work are deferred to individually scoped follow-ups. Existing System256 and digital drum support remain limited. M5.7 covers final acceptance and packaging, retaining documented issues and unverified cases.
 
 **Acceptance principle:** the selected core features behave correctly in the frontend, preserve persistent data and lifecycle guarantees, and are described truthfully in core metadata and distribution documentation. Performance and compatibility claims retain their own workload-specific acceptance. Deferred save-state or lifecycle requirements require explicit review before milestone completion.
 

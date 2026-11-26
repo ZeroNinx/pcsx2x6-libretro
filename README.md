@@ -6,7 +6,7 @@ The core is experimental. It supports Windows x64 with Vulkan (default) or Direc
 
 ## Getting started
 
-1. Extract the core package into your RetroArch installation. If you use custom directories, copy the core, info and system files to their configured locations.
+1. Download the [release package](https://github.com/ZeroNinx/pcsx2x6-libretro/releases/latest) and extract it into your RetroArch installation. If you use custom directories, copy the core, info and system files to their configured locations.
 2. Put your COH-H arcade BIOS in `system/pcsx2x6/bios/` and the game's working dongle dump in `system/pcsx2x6/memcards/`.
 3. Open the game's `.acgame` manifest in RetroArch and select PCSX2x6.
 

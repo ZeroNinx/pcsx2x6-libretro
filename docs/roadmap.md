@@ -1,6 +1,6 @@
 # Development Roadmap
 
-M1 through [M4](M4.md) are complete. [M5](M5.md) has implemented the selected core features; final acceptance and packaging remain. The sections below describe each milestone's scope and acceptance criteria.
+M1 through [M5](M5.md) are complete within their selected scopes. Version 0.2 is the first full release. The sections below describe each milestone's scope and acceptance criteria.
 
 ## Objective and initial scope
 

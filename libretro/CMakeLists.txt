@@ -1,4 +1,4 @@
-set(PCSX2X6_LIBRETRO_VERSION "0.1")
+set(PCSX2X6_LIBRETRO_VERSION "0.2")
 add_library(pcsx2x6_libretro SHARED)
 
 set_target_properties(pcsx2x6_libretro PROPERTIES
